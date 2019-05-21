@@ -16,6 +16,16 @@ package io.hops.util.featurestore;
 
 
 import com.google.common.base.Strings;
+import com.uber.hoodie.DataSourceUtils;
+import com.uber.hoodie.DataSourceWriteOptions;
+import com.uber.hoodie.common.model.HoodieTableType;
+import com.uber.hoodie.common.util.FSUtils;
+import com.uber.hoodie.common.util.TypedProperties;
+import com.uber.hoodie.config.HoodieWriteConfig;
+import com.uber.hoodie.hive.HiveSyncConfig;
+import com.uber.hoodie.hive.HiveSyncTool;
+import org.apache.hadoop.hive.conf.HiveConf;
+import com.uber.hoodie.hive.SlashEncodedDayPartitionValueExtractor;
 import io.hops.util.Constants;
 import io.hops.util.Hops;
 import io.hops.util.exceptions.CannotWriteImageDataFrameException;
@@ -227,12 +237,20 @@ public class FeaturestoreHelper {
    * @param featuregroup        the name of the featuregroup (hive table name)
    * @param featurestore        the featurestore to save the featuregroup to (hive database)
    * @param featuregroupVersion the version of the featuregroup
+   * @param hudi                a boolean flag indicating whether the feature group is a hudi table or not
+   * @param hudiArgs            a java map with hudi arguments
+   * @param hudiTableBasePath   the base direcotry to where the external hudi table is stored
+   *
    */
   public static void insertIntoFeaturegroup(Dataset<Row> sparkDf, SparkSession sparkSession,
-                                            String featuregroup, String featurestore,
-                                            int featuregroupVersion) {
-    useFeaturestore(sparkSession, featurestore);
+                                            String featuregroup, String featurestore, int featuregroupVersion, boolean hudi, Map<String, String> hudiArgs,
+                                            String hudiTableBasePath) {
+   // useFeaturestore(sparkSession, featurestore);
     String tableName = getTableName(featuregroup, featuregroupVersion);
+
+    String hudiTablePath = hudiTableBasePath + tableName;
+    HiveConf hiveConf = new HiveConf();
+    hiveConf.addResource(sparkSession.sparkContext().hadoopConfiguration());
   
     SparkContext sc = sparkSession.sparkContext();
     SQLContext sqlContext = new SQLContext(sc);
@@ -242,8 +260,59 @@ public class FeaturestoreHelper {
     //this means that all the featuregroup metadata will be dropped due to ON DELETE CASCADE
     String mode = "append";
     //Specify format hive as it is managed table
-    String format = "hive";
-    sparkDf.write().format(format).mode(mode).insertInto(tableName);
+
+    if(hudi) {
+      String format = "com.uber.hoodie";
+      if(!hudiArgs.containsKey(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_USER_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PASS_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_URL_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY())
+      ) {
+        throw new IllegalArgumentException("HudiArgs map must contain the fields: " +
+                DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY() + ", " +
+                DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY() + ", " +
+                DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY() + ", " +
+                DataSourceWriteOptions.HIVE_USER_OPT_KEY() + ", " +
+                DataSourceWriteOptions.HIVE_PASS_OPT_KEY() + ", " +
+                DataSourceWriteOptions.HIVE_URL_OPT_KEY() + ", " +
+                DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()
+        );
+      }
+      sparkDf.write().format(format)
+              .option(DataSourceWriteOptions.STORAGE_TYPE_OPT_KEY(), HoodieTableType.COPY_ON_WRITE.name())
+              .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), DataSourceWriteOptions.BULK_INSERT_OPERATION_OPT_VAL())
+              .option(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY(),
+                      hudiArgs.get(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()))
+              .option(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY(),
+                      hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
+              .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
+                      hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
+              .option(HoodieWriteConfig.TABLE_NAME, tableName)
+              .mode(mode)
+              .save(hudiTablePath);
+      TypedProperties props = new TypedProperties();
+      props.put(DataSourceWriteOptions.HIVE_ASSUME_DATE_PARTITION_OPT_KEY(),
+              Boolean.valueOf(DataSourceWriteOptions.DEFAULT_HIVE_ASSUME_DATE_PARTITION_OPT_VAL()));
+      props.put(DataSourceWriteOptions.HIVE_DATABASE_OPT_KEY(), featurestore);
+      props.put(DataSourceWriteOptions.HIVE_TABLE_OPT_KEY(), tableName);
+      props.put(DataSourceWriteOptions.HIVE_USER_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.HIVE_USER_OPT_KEY()));
+      props.put(DataSourceWriteOptions.HIVE_PASS_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.HIVE_PASS_OPT_KEY()));
+      props.put(DataSourceWriteOptions.HIVE_URL_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.HIVE_URL_OPT_KEY()));
+      props.put(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY(),
+              hudiArgs.get(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()));
+      props.put(DataSourceWriteOptions.HIVE_PARTITION_EXTRACTOR_CLASS_OPT_KEY(),
+              SlashEncodedDayPartitionValueExtractor.class.getName());
+      HiveSyncConfig hiveSyncConfig = DataSourceUtils.buildHiveSyncConfig(props, hudiTablePath);
+      FileSystem fs = FSUtils.getFs(hudiTablePath, sparkSession.sparkContext().hadoopConfiguration());
+      new HiveSyncTool(hiveSyncConfig, hiveConf, fs).syncHoodieTable();
+    } else {
+      //Specify format hive as it is managed table
+      String format = "hive";
+      sparkDf.write().format(format).mode(mode).insertInto(tableName);
+    }
   }
 
   /**

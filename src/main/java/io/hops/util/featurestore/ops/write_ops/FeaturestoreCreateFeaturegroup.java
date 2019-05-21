@@ -18,6 +18,7 @@ import org.apache.spark.sql.SparkSession;
 
 import javax.xml.bind.JAXBException;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Builder class for Create-Featuregroup operation on the Hopsworks Featurestore
@@ -71,7 +72,7 @@ public class FeaturestoreCreateFeaturegroup extends FeaturestoreOp {
     FeaturestoreRestClient.createFeaturegroupRest(featurestore, name, version, description, jobName, dependencies,
       featuresSchema, statisticsDTO);
     FeaturestoreHelper.insertIntoFeaturegroup(dataframe, spark, name,
-      featurestore, version);
+            featurestore, version, hudi, hudiArgs, hudiTableBasePath);
     //Update metadata cache since we created a new feature group
     Hops.updateFeaturestoreMetadataCache().setFeaturestore(featurestore).write();
     
@@ -169,6 +170,21 @@ public class FeaturestoreCreateFeaturegroup extends FeaturestoreOp {
   
   public FeaturestoreCreateFeaturegroup setPartitionBy(List<String> partitionBy) {
     this.partitionBy = partitionBy;
+    return this;
+  }
+
+  public FeaturestoreCreateFeaturegroup setHudi(boolean hudi) {
+    this.hudi = hudi;
+    return this;
+  }
+
+  public FeaturestoreCreateFeaturegroup setHudiArgs(Map<String, String> hudiArgs) {
+    this.hudiArgs = hudiArgs;
+    return this;
+  }
+
+  public FeaturestoreCreateFeaturegroup setHudiTableBasePath(String hudiTableBasePath) {
+    this.hudiTableBasePath = hudiTableBasePath;
     return this;
   }
   
