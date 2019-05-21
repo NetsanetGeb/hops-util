@@ -16,6 +16,11 @@ package io.hops.util.featurestore;
 
 
 import com.google.common.base.Strings;
+import com.uber.hoodie.DataSourceReadOptions;
+import com.uber.hoodie.DataSourceWriteOptions;
+import com.uber.hoodie.common.model.HoodieTableType;
+import com.uber.hoodie.config.HoodieWriteConfig;
+import com.uber.hoodie.hive.HiveSyncTool;
 import io.hops.util.Constants;
 import io.hops.util.Hops;
 import io.hops.util.exceptions.CannotWriteImageDataFrameException;
@@ -110,11 +115,11 @@ import static org.apache.spark.sql.functions.col;
  * Class with helper methods for the featurestore API, used by Hops.java
  */
 public class FeaturestoreHelper {
-
+  
   //Class is supposed to be used from static context only
   private FeaturestoreHelper() {
   }
-
+  
   /**
    * JAXB config for unmarshalling and marshalling responses/requests from/to Hopsworks REST API
    */
@@ -126,7 +131,7 @@ public class FeaturestoreHelper {
   private static JAXBContext featureJAXBContext;
   private static JAXBContext featurestoreMetadataJAXBContext;
   private static JAXBContext trainingDatasetJAXBContext;
-
+  
   private static Marshaller descriptiveStatsMarshaller;
   private static Marshaller featureCorrelationMarshaller;
   private static Marshaller featureHistogramsMarshaller;
@@ -135,27 +140,34 @@ public class FeaturestoreHelper {
   private static Marshaller featurestoreMetadataMarshaller;
   private static Marshaller trainingDatasetMarshaller;
   
+  
   /**
    * Featurestore Metadata Cache
    */
   private static FeaturestoreMetadataDTO featurestoreMetadataCache = null;
-
+  
+  /**
+   * String constants
+   */
+  private static String HOODIE_DATA_FORMAT = "com.uber.hoodie";
+  private static String HOODIE_HIVE_FORMAT = "hive";
+  
   static {
     try {
       descriptiveStatsJAXBContext =
-          JAXBContextFactory.createContext(new Class[]{DescriptiveStatsDTO.class}, null);
+        JAXBContextFactory.createContext(new Class[]{DescriptiveStatsDTO.class}, null);
       featureCorrelationJAXBContext =
-          JAXBContextFactory.createContext(new Class[]{FeatureCorrelationMatrixDTO.class}, null);
+        JAXBContextFactory.createContext(new Class[]{FeatureCorrelationMatrixDTO.class}, null);
       featureHistogramsJAXBContext =
-          JAXBContextFactory.createContext(new Class[]{FeatureDistributionsDTO.class}, null);
+        JAXBContextFactory.createContext(new Class[]{FeatureDistributionsDTO.class}, null);
       clusterAnalysisJAXBContext =
-          JAXBContextFactory.createContext(new Class[]{ClusterAnalysisDTO.class}, null);
+        JAXBContextFactory.createContext(new Class[]{ClusterAnalysisDTO.class}, null);
       featureJAXBContext =
-          JAXBContextFactory.createContext(new Class[]{FeatureDTO.class}, null);
+        JAXBContextFactory.createContext(new Class[]{FeatureDTO.class}, null);
       featurestoreMetadataJAXBContext =
-          JAXBContextFactory.createContext(new Class[]{FeaturestoreMetadataDTO.class}, null);
+        JAXBContextFactory.createContext(new Class[]{FeaturestoreMetadataDTO.class}, null);
       trainingDatasetJAXBContext =
-          JAXBContextFactory.createContext(new Class[]{TrainingDatasetDTO.class}, null);
+        JAXBContextFactory.createContext(new Class[]{TrainingDatasetDTO.class}, null);
       descriptiveStatsMarshaller = descriptiveStatsJAXBContext.createMarshaller();
       descriptiveStatsMarshaller.setProperty(MarshallerProperties.JSON_INCLUDE_ROOT, false);
       descriptiveStatsMarshaller.setProperty(MarshallerProperties.MEDIA_TYPE, MediaType.APPLICATION_JSON);
@@ -174,7 +186,7 @@ public class FeaturestoreHelper {
       featurestoreMetadataMarshaller = featurestoreMetadataJAXBContext.createMarshaller();
       featurestoreMetadataMarshaller.setProperty(MarshallerProperties.JSON_INCLUDE_ROOT, false);
       featurestoreMetadataMarshaller.setProperty(
-          MarshallerProperties.MEDIA_TYPE, MediaType.APPLICATION_JSON);
+        MarshallerProperties.MEDIA_TYPE, MediaType.APPLICATION_JSON);
       trainingDatasetMarshaller = trainingDatasetJAXBContext.createMarshaller();
       trainingDatasetMarshaller.setProperty(MarshallerProperties.JSON_INCLUDE_ROOT, false);
       trainingDatasetMarshaller.setProperty(MarshallerProperties.MEDIA_TYPE, MediaType.APPLICATION_JSON);
@@ -192,48 +204,65 @@ public class FeaturestoreHelper {
     String projectName = Hops.getProjectName();
     return projectName.toLowerCase() + "_featurestore";
   }
-
+  
   /**
    * Selects the featurestore database in SparkSQL
    *
-   * @param sparkSession the spark session
-   * @param featurestore the featurestore database to select
+   * @param sparkSession
+   *   the spark session
+   * @param featurestore
+   *   the featurestore database to select
    */
   public static void useFeaturestore(SparkSession sparkSession, String featurestore) {
-    if (featurestore == null)
+    if (featurestore == null) {
       featurestore = getProjectFeaturestore();
+    }
     String sqlStr = "use " + featurestore;
     logAndRunSQL(sparkSession, sqlStr);
   }
-
+  
   /**
    * Helper function that gets the Hive table name for a featuregroup with a particular version
    *
-   * @param featuregroupName name of the featuregroup
-   * @param version          version of the featuregroup
+   * @param featuregroupName
+   *   name of the featuregroup
+   * @param version
+   *   version of the featuregroup
    * @return hive table name
    */
   public static String getTableName(String featuregroupName, int version) {
     return featuregroupName + "_" + version;
   }
-
+  
   /**
    * Saves the given dataframe to the specified featuregroup. Defaults to the project-featurestore
    * This will append to  the featuregroup. To overwrite a featuregroup, create a new version of the featuregroup
    * from the UI and append to that table.
    *
-   * @param sparkDf             the dataframe containing the data to insert into the featuregroup
-   * @param sparkSession        the spark session
-   * @param featuregroup        the name of the featuregroup (hive table name)
-   * @param featurestore        the featurestore to save the featuregroup to (hive database)
-   * @param featuregroupVersion the version of the featuregroup
+   * @param sparkDf
+   *   the dataframe containing the data to insert into the featuregroup
+   * @param sparkSession
+   *   the spark session
+   * @param featuregroup
+   *   the name of the featuregroup (hive table name)
+   * @param featurestore
+   *   the featurestore to save the featuregroup to (hive database)
+   * @param featuregroupVersion
+   *   the version of the featuregroup
+   * @param hudi
+   *   a boolean flag indicating whether the feature group is a hudi table or not
+   * @param hudiArgs
+   *   a java map with hudi arguments
+   * @param hudiTableBasePath
+   *   the base directory to where the external hudi table is stored
+   * @param hiveSyncTool
+   *   the hive sync tool for Hudi
    */
   public static void insertIntoFeaturegroup(Dataset<Row> sparkDf, SparkSession sparkSession,
-                                            String featuregroup, String featurestore,
-                                            int featuregroupVersion) {
+    String featuregroup, String featurestore, int featuregroupVersion, boolean hudi,
+    Map<String, String> hudiArgs, String hudiTableBasePath, HiveSyncTool hiveSyncTool) {
     useFeaturestore(sparkSession, featurestore);
     String tableName = getTableName(featuregroup, featuregroupVersion);
-  
     SparkContext sc = sparkSession.sparkContext();
     SQLContext sqlContext = new SQLContext(sc);
     sqlContext.setConf("hive.exec.dynamic.partition", "true");
@@ -241,25 +270,77 @@ public class FeaturestoreHelper {
     //overwrite is not supported because it will drop the table and create a new one,
     //this means that all the featuregroup metadata will be dropped due to ON DELETE CASCADE
     String mode = "append";
-    //Specify format hive as it is managed table
-    String format = "hive";
-    sparkDf.write().format(format).mode(mode).insertInto(tableName);
+    if (hudi) {
+      //Sync Hudi External Table with Hive
+      hiveSyncTool.syncHoodieTable();
+    } else {
+      //Specify format hive as it is managed table
+      String format = HOODIE_HIVE_FORMAT;
+      sparkDf.write().format(format).mode(mode).insertInto(tableName);
+    }
   }
+  
+  public static void hoodieTable(Dataset<Row> sparkDf, Map<String, String> hudiArgs, String hudiTableBasePath,
+    String tableName) {
+    
+    String mode = "append";
+    String format = "com.uber.hoodie";
+    String COMMIT_CHECKPOINT_KEY = "_deltastreamer.checkpoint.key";
 
+    //String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
+    if (!hudiArgs.containsKey(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()) ||
+      !hudiArgs.containsKey(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()) ||
+      !hudiArgs.containsKey(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()) ||
+      !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_USER_OPT_KEY()) ||
+      !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PASS_OPT_KEY()) ||
+      !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_URL_OPT_KEY()) ||
+      !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY())
+    ) {
+      throw new IllegalArgumentException("HudiArgs map must contain the fields: " +
+        DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY() + ", " +
+        DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY() + ", " +
+        DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY() + ", " +
+        DataSourceWriteOptions.HIVE_USER_OPT_KEY() + ", " +
+        DataSourceWriteOptions.HIVE_PASS_OPT_KEY() + ", " +
+        DataSourceWriteOptions.HIVE_URL_OPT_KEY() + ", " +
+        DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()
+      );
+    }
+    //Write Hudi External Table
+    sparkDf.write().format(format)
+      .option(DataSourceWriteOptions.STORAGE_TYPE_OPT_KEY(), HoodieTableType.COPY_ON_WRITE.name())
+      .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.OPERATION_OPT_KEY()))
+      .option(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY(),
+        hudiArgs.get(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()))
+      .option(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY(),
+        hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
+      .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
+        hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
+      .option(COMMIT_CHECKPOINT_KEY, hudiArgs.get(COMMIT_CHECKPOINT_KEY))
+      .option(HoodieWriteConfig.INSERT_PARALLELISM, hudiArgs.get(HoodieWriteConfig.INSERT_PARALLELISM))
+      .option(HoodieWriteConfig.UPSERT_PARALLELISM, hudiArgs.get(HoodieWriteConfig.UPSERT_PARALLELISM))
+      .option(HoodieWriteConfig.BULKINSERT_PARALLELISM, hudiArgs.get(HoodieWriteConfig.BULKINSERT_PARALLELISM))
+      .option(HoodieWriteConfig.TABLE_NAME, tableName)
+      .mode(mode)
+      .save(hudiTableBasePath);
+  }
+  
   /**
    * Go through list of featuregroups and find the ones that contain the feature
    *
-   * @param featuregroups featuregroups to search through
-   * @param feature       the feature to look for
+   * @param featuregroups
+   *   featuregroups to search through
+   * @param feature
+   *   the feature to look for
    * @return a list of featuregroup names and versions for featuregroups that contain the given feature
    */
   private static List<FeaturegroupDTO> findFeaturegroupThatContainsFeature(
-      List<FeaturegroupDTO> featuregroups, String feature) {
+    List<FeaturegroupDTO> featuregroups, String feature) {
     List<FeaturegroupDTO> matches = new ArrayList<>();
     for (FeaturegroupDTO featuregroupDTO : featuregroups) {
       for (FeatureDTO featureDTO : featuregroupDTO.getFeatures()) {
         String fullName = getTableName(featuregroupDTO.getName(), featuregroupDTO.getVersion()) + "." +
-            featureDTO.getName();
+          featureDTO.getName();
         if (featureDTO.getName().equals(feature) || fullName.equals(feature)) {
           matches.add(featuregroupDTO);
           break;
@@ -268,19 +349,22 @@ public class FeaturestoreHelper {
     }
     return matches;
   }
-
+  
   /**
    * Tries to find a list of featuregroups that contain a requested set of features by searching through
    * data from the metastore
    *
-   * @param featuregroups the list of all featuregroups from the metastore
-   * @param features      the list of features requested
-   * @param featurestore  the featurestore to search through
+   * @param featuregroups
+   *   the list of all featuregroups from the metastore
+   * @param features
+   *   the list of features requested
+   * @param featurestore
+   *   the featurestore to search through
    * @return a list of featuregroups such that each feature is included in exactly one featuregroup
    */
   public static List<FeaturegroupDTO> findFeaturegroupsThatContainsFeatures(
-      List<FeaturegroupDTO> featuregroups,
-      List<String> features, String featurestore) {
+    List<FeaturegroupDTO> featuregroups,
+    List<String> features, String featurestore) {
     Set<FeaturegroupDTO> featureFeaturegroupsSet = new HashSet<>();
     for (String feature : features) {
       FeaturegroupDTO featuregroupDTO = findFeature(feature, featurestore, featuregroups);
@@ -290,30 +374,74 @@ public class FeaturestoreHelper {
     featureFeaturegroups.addAll(featureFeaturegroupsSet);
     return featureFeaturegroups;
   }
-
+  
   /**
    * Gets a featuregroup from a particular featurestore
    *
-   * @param sparkSession        the spark session
-   * @param featuregroup        the featuregroup to get
-   * @param featurestore        the featurestore to query
-   * @param featuregroupVersion the version of the featuregroup to get
+   * @param sparkSession
+   *   the spark session
+   * @param featuregroup
+   *   the featuregroup to get
+   * @param featurestore
+   *   the featurestore to query
+   * @param featuregroupVersion
+   *   the version of the featuregroup to get
    * @return a spark dataframe with the featuregroup
    */
   public static Dataset<Row> getFeaturegroup(SparkSession sparkSession, String featuregroup,
-                                             String featurestore, int featuregroupVersion) {
+    String featurestore, int featuregroupVersion) {
     useFeaturestore(sparkSession, featurestore);
     String sqlStr = "SELECT * FROM " + getTableName(featuregroup, featuregroupVersion);
     return logAndRunSQL(sparkSession, sqlStr);
   }
   
   /**
+   * Gets a featuregroup from a particular featurestore
+   *
+   * @param sparkSession
+   *   the spark session
+   * @param featurestore
+   *   the featurestore to query
+   * @param hudiArgs
+   *   a java map with hudi arguments
+   * @param hudiTableBasePath
+   *   the base directory to store and retrive hudi table
+   * @return a spark dataframe with the featuregroup
+   */
+  
+  public static Dataset<Row> getHudiFeaturegroup(SparkSession sparkSession, String featurestore,
+    Map<String, String> hudiArgs, String hudiTableBasePath) {
+    useFeaturestore(sparkSession, featurestore);
+    String format = "com.uber.hoodie";
+    
+    if (!hudiArgs.containsKey(DataSourceReadOptions.VIEW_TYPE_OPT_KEY()) ||
+      !hudiArgs.containsKey(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY())
+    
+    ) {
+      throw new IllegalArgumentException("HudiArgs map must contain the fields: " +
+        DataSourceReadOptions.VIEW_TYPE_OPT_KEY() + ", " +
+        DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY()
+      );
+    }
+    return sparkSession.read().format(format)
+      .option(DataSourceReadOptions.VIEW_TYPE_OPT_KEY(),
+        hudiArgs.get(DataSourceReadOptions.VIEW_TYPE_OPT_KEY()))
+      .option(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY(),
+        hudiArgs.get(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY()))
+      .load(hudiTableBasePath);
+  }
+  
+  /**
    * Gets the partitions of a featuregroup from a particular featurestore
    *
-   * @param sparkSession        the spark session
-   * @param featuregroup        the featuregroup to get partitions for
-   * @param featurestore        the featurestore where the featuregroup resides
-   * @param featuregroupVersion the version of the featuregroup
+   * @param sparkSession
+   *   the spark session
+   * @param featuregroup
+   *   the featuregroup to get partitions for
+   * @param featurestore
+   *   the featurestore where the featuregroup resides
+   * @param featuregroupVersion
+   *   the version of the featuregroup
    * @return a spark dataframe with the partitions of the featuregroup
    */
   public static Dataset<Row> getFeaturegroupPartitions(SparkSession sparkSession, String featuregroup,
@@ -322,21 +450,27 @@ public class FeaturestoreHelper {
     String sqlStr = "SHOW PARTITIONS " + getTableName(featuregroup, featuregroupVersion);
     return logAndRunSQL(sparkSession, sqlStr);
   }
-
+  
   /**
    * Gets a training dataset from a feature store
    *
-   * @param sparkSession the spark session
-   * @param dataFormat   the data format of the training dataset
-   * @param hdfsPath     the hdfs path to the dataset
+   * @param sparkSession
+   *   the spark session
+   * @param dataFormat
+   *   the data format of the training dataset
+   * @param hdfsPath
+   *   the hdfs path to the dataset
    * @return a spark dataframe with the dataset
-   * @throws TrainingDatasetFormatNotSupportedError if a unsupported data format is provided, supported modes are:
-   *                                                tfrecords, tsv, csv, avro, orc, image and parquet
-   * @throws IOException IOException IOException
-   * @throws TrainingDatasetDoesNotExistError if the hdfsPath is not found
+   * @throws TrainingDatasetFormatNotSupportedError
+   *   if a unsupported data format is provided, supported modes are:
+   *   tfrecords, tsv, csv, avro, orc, image and parquet
+   * @throws IOException
+   *   IOException IOException
+   * @throws TrainingDatasetDoesNotExistError
+   *   if the hdfsPath is not found
    */
   public static Dataset<Row> getTrainingDataset(SparkSession sparkSession, String dataFormat, String hdfsPath)
-      throws TrainingDatasetFormatNotSupportedError, IOException, TrainingDatasetDoesNotExistError {
+    throws TrainingDatasetFormatNotSupportedError, IOException, TrainingDatasetDoesNotExistError {
     Configuration hdfsConf = new Configuration();
     Path filePath = null;
     FileSystem hdfs = null;
@@ -346,17 +480,17 @@ public class FeaturestoreHelper {
         hdfs = filePath.getFileSystem(hdfsConf);
         if (hdfs.exists(filePath)) {
           return sparkSession.read().format(dataFormat).option(Constants.SPARK_WRITE_HEADER, "true")
-              .option(Constants.SPARK_WRITE_DELIMITER, Constants.COMMA_DELIMITER).load(hdfsPath);
+            .option(Constants.SPARK_WRITE_DELIMITER, Constants.COMMA_DELIMITER).load(hdfsPath);
         } else {
           filePath = new org.apache.hadoop.fs.Path(hdfsPath + Constants.TRAINING_DATASET_CSV_SUFFIX);
           hdfs = filePath.getFileSystem(hdfsConf);
           if (hdfs.exists(filePath)) {
             return sparkSession.read().format(dataFormat).option(Constants.SPARK_WRITE_HEADER, "true")
-                .option(Constants.SPARK_WRITE_DELIMITER, Constants.COMMA_DELIMITER).load(hdfsPath +
-                    Constants.TRAINING_DATASET_CSV_SUFFIX);
+              .option(Constants.SPARK_WRITE_DELIMITER, Constants.COMMA_DELIMITER).load(hdfsPath +
+                Constants.TRAINING_DATASET_CSV_SUFFIX);
           } else {
             throw new TrainingDatasetDoesNotExistError("Could not find any training dataset in folder : "
-                + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_CSV_SUFFIX);
+              + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_CSV_SUFFIX);
           }
         }
       case Constants.TRAINING_DATASET_TSV_FORMAT:
@@ -364,17 +498,17 @@ public class FeaturestoreHelper {
         hdfs = filePath.getFileSystem(hdfsConf);
         if (hdfs.exists(filePath)) {
           return sparkSession.read().format(dataFormat).option(Constants.SPARK_WRITE_HEADER, "true")
-              .option(Constants.SPARK_WRITE_DELIMITER, Constants.TAB_DELIMITER).load(hdfsPath);
+            .option(Constants.SPARK_WRITE_DELIMITER, Constants.TAB_DELIMITER).load(hdfsPath);
         } else {
           filePath = new org.apache.hadoop.fs.Path(hdfsPath + Constants.TRAINING_DATASET_TSV_SUFFIX);
           hdfs = filePath.getFileSystem(hdfsConf);
           if (hdfs.exists(filePath)) {
             return sparkSession.read().format(dataFormat).option(Constants.SPARK_WRITE_HEADER, "true")
-                .option(Constants.SPARK_WRITE_DELIMITER, Constants.TAB_DELIMITER).load(hdfsPath +
-                    Constants.TRAINING_DATASET_TSV_SUFFIX);
+              .option(Constants.SPARK_WRITE_DELIMITER, Constants.TAB_DELIMITER).load(hdfsPath +
+                Constants.TRAINING_DATASET_TSV_SUFFIX);
           } else {
             throw new TrainingDatasetDoesNotExistError("Could not find any training dataset in folder : "
-                + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_TSV_SUFFIX);
+              + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_TSV_SUFFIX);
           }
         }
       case Constants.TRAINING_DATASET_PARQUET_FORMAT:
@@ -389,7 +523,7 @@ public class FeaturestoreHelper {
             return sparkSession.read().parquet(hdfsPath + Constants.TRAINING_DATASET_PARQUET_SUFFIX);
           } else {
             throw new TrainingDatasetDoesNotExistError("Could not find any training dataset in folder : "
-                + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_PARQUET_SUFFIX);
+              + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_PARQUET_SUFFIX);
           }
         }
       case Constants.TRAINING_DATASET_AVRO_FORMAT:
@@ -404,7 +538,7 @@ public class FeaturestoreHelper {
             return sparkSession.read().format(dataFormat).load(hdfsPath + Constants.TRAINING_DATASET_AVRO_SUFFIX);
           } else {
             throw new TrainingDatasetDoesNotExistError("Could not find any training dataset in folder : "
-                + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_AVRO_SUFFIX);
+              + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_AVRO_SUFFIX);
           }
         }
       case Constants.TRAINING_DATASET_ORC_FORMAT:
@@ -419,7 +553,7 @@ public class FeaturestoreHelper {
             return sparkSession.read().format(dataFormat).load(hdfsPath + Constants.TRAINING_DATASET_ORC_SUFFIX);
           } else {
             throw new TrainingDatasetDoesNotExistError("Could not find any training dataset in folder : "
-                + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_ORC_SUFFIX);
+              + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_ORC_SUFFIX);
           }
         }
       case Constants.TRAINING_DATASET_IMAGE_FORMAT:
@@ -434,7 +568,7 @@ public class FeaturestoreHelper {
             return sparkSession.read().format(dataFormat).load(hdfsPath + Constants.TRAINING_DATASET_IMAGE_SUFFIX);
           } else {
             throw new TrainingDatasetDoesNotExistError("Could not find any training dataset in folder : "
-                + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_IMAGE_SUFFIX);
+              + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_IMAGE_SUFFIX);
           }
         }
       case Constants.TRAINING_DATASET_TFRECORDS_FORMAT:
@@ -442,109 +576,123 @@ public class FeaturestoreHelper {
         hdfs = filePath.getFileSystem(hdfsConf);
         if (hdfs.exists(filePath)) {
           return sparkSession.read().format(dataFormat).option(Constants.SPARK_TF_CONNECTOR_RECORD_TYPE,
-              Constants.SPARK_TF_CONNECTOR_RECORD_TYPE_EXAMPLE).load(hdfsPath);
+            Constants.SPARK_TF_CONNECTOR_RECORD_TYPE_EXAMPLE).load(hdfsPath);
         } else {
           filePath = new org.apache.hadoop.fs.Path(hdfsPath + Constants.TRAINING_DATASET_TFRECORDS_SUFFIX);
           hdfs = filePath.getFileSystem(hdfsConf);
           if (hdfs.exists(filePath)) {
             return sparkSession.read().format(dataFormat).option(Constants.SPARK_TF_CONNECTOR_RECORD_TYPE,
-                Constants.SPARK_TF_CONNECTOR_RECORD_TYPE_EXAMPLE).load(hdfsPath +
-                Constants.TRAINING_DATASET_TFRECORDS_SUFFIX);
+              Constants.SPARK_TF_CONNECTOR_RECORD_TYPE_EXAMPLE).load(hdfsPath +
+              Constants.TRAINING_DATASET_TFRECORDS_SUFFIX);
           } else {
             throw new TrainingDatasetDoesNotExistError("Could not find any training dataset in folder : "
-                + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_TFRECORDS_SUFFIX);
+              + hdfsPath + " or in file: " + hdfsPath + Constants.TRAINING_DATASET_TFRECORDS_SUFFIX);
           }
         }
       default:
         throw new TrainingDatasetFormatNotSupportedError("The provided data format: " + dataFormat +
-            " is not supported in the Java/Scala API, the supported data formats are: " +
-            Constants.TRAINING_DATASET_CSV_FORMAT + "," +
-            Constants.TRAINING_DATASET_TSV_FORMAT + "," +
-            Constants.TRAINING_DATASET_TFRECORDS_FORMAT + "," +
-            Constants.TRAINING_DATASET_PARQUET_FORMAT + "," +
-            Constants.TRAINING_DATASET_AVRO_FORMAT + "," +
-            Constants.TRAINING_DATASET_ORC_FORMAT + "," +
-            Constants.TRAINING_DATASET_IMAGE_FORMAT + ","
+          " is not supported in the Java/Scala API, the supported data formats are: " +
+          Constants.TRAINING_DATASET_CSV_FORMAT + "," +
+          Constants.TRAINING_DATASET_TSV_FORMAT + "," +
+          Constants.TRAINING_DATASET_TFRECORDS_FORMAT + "," +
+          Constants.TRAINING_DATASET_PARQUET_FORMAT + "," +
+          Constants.TRAINING_DATASET_AVRO_FORMAT + "," +
+          Constants.TRAINING_DATASET_ORC_FORMAT + "," +
+          Constants.TRAINING_DATASET_IMAGE_FORMAT + ","
         );
     }
   }
-
+  
   /**
    * Searches a list of featuregroups for a particular feature and returns the matching featuregroup
    *
-   * @param feature          the feature to search for
-   * @param featurestore     the featurestore to query
-   * @param featuregroupDTOS the list of featuregroups to search through
+   * @param feature
+   *   the feature to search for
+   * @param featurestore
+   *   the featurestore to query
+   * @param featuregroupDTOS
+   *   the list of featuregroups to search through
    * @return the matching featuregroup
    */
   private static FeaturegroupDTO findFeature(String feature, String featurestore,
-                                             List<FeaturegroupDTO> featuregroupDTOS) {
+    List<FeaturegroupDTO> featuregroupDTOS) {
     List<FeaturegroupDTO> matchedFeaturegroups = findFeaturegroupThatContainsFeature(featuregroupDTOS, feature);
     if (matchedFeaturegroups.isEmpty()) {
       throw new IllegalArgumentException("Could not find the feature with name: " + feature +
-          " in any of the featuregroups of the featurestore: " + featurestore);
+        " in any of the featuregroups of the featurestore: " + featurestore);
     }
     if (matchedFeaturegroups.size() > 1) {
       List<String> featuregroupStrings = featuregroupDTOS.stream()
-          .map(fg -> getTableName(fg.getName(), fg.getVersion())).collect(Collectors.toList());
+        .map(fg -> getTableName(fg.getName(), fg.getVersion())).collect(Collectors.toList());
       String featuregroupsStr = StringUtils.join(featuregroupStrings, ", ");
       throw new IllegalArgumentException("Found the feature with name: " + feature +
-          " in more than one of the featuregroups of the featurestore " + featurestore +
-          " please specify featuregroup that you want to get the feature from." +
-          " The matched featuregroups are: " + featuregroupsStr);
+        " in more than one of the featuregroups of the featurestore " + featurestore +
+        " please specify featuregroup that you want to get the feature from." +
+        " The matched featuregroups are: " + featuregroupsStr);
     }
     return matchedFeaturegroups.get(0);
   }
-
+  
   /**
    * Gets a feature from a featurestore given metadata about which featuregroups exist, it will search through the
    * featuregroups and find where the feature is located
    *
-   * @param sparkSession     the spark session
-   * @param feature          the feature to get
-   * @param featurestore     the featurestore to query
-   * @param featuregroupDTOS the list of featuregroups metadata
+   * @param sparkSession
+   *   the spark session
+   * @param feature
+   *   the feature to get
+   * @param featurestore
+   *   the featurestore to query
+   * @param featuregroupDTOS
+   *   the list of featuregroups metadata
    * @return A dataframe with the feature
    */
   public static Dataset<Row> getFeature(
-      SparkSession sparkSession, String feature,
-      String featurestore, List<FeaturegroupDTO> featuregroupDTOS) {
+    SparkSession sparkSession, String feature,
+    String featurestore, List<FeaturegroupDTO> featuregroupDTOS) {
     useFeaturestore(sparkSession, featurestore);
     FeaturegroupDTO matchedFeaturegroup = findFeature(feature, featurestore, featuregroupDTOS);
     String sqlStr = "SELECT " + feature + " FROM " +
-        getTableName(matchedFeaturegroup.getName(), matchedFeaturegroup.getVersion());
+      getTableName(matchedFeaturegroup.getName(), matchedFeaturegroup.getVersion());
     return logAndRunSQL(sparkSession, sqlStr);
   }
-
+  
   /**
    * Gets a feature from a featurestore and a specific featuregroup.
    *
-   * @param sparkSession        the spark session
-   * @param feature             the feature to get
-   * @param featurestore        the featurestore to query
-   * @param featuregroup        the featuregroup where the feature is located
-   * @param featuregroupVersion the version of the featuregroup
+   * @param sparkSession
+   *   the spark session
+   * @param feature
+   *   the feature to get
+   * @param featurestore
+   *   the featurestore to query
+   * @param featuregroup
+   *   the featuregroup where the feature is located
+   * @param featuregroupVersion
+   *   the version of the featuregroup
    * @return the resulting spark dataframe with the feature
    */
   public static Dataset<Row> getFeature(SparkSession sparkSession, String feature, String featurestore,
-                                        String featuregroup, int featuregroupVersion) {
+    String featuregroup, int featuregroupVersion) {
     useFeaturestore(sparkSession, featurestore);
     String sqlStr = "SELECT " + feature + " FROM " + getTableName(featuregroup, featuregroupVersion);
     return logAndRunSQL(sparkSession, sqlStr);
   }
-
+  
   /**
    * Constructs the SQL JOIN-string using a list of featuregroups and a join key
    *
-   * @param featuregroupDTOS the list of featuregroups
-   * @param joinKey          the join key
+   * @param featuregroupDTOS
+   *   the list of featuregroups
+   * @param joinKey
+   *   the join key
    * @return the join string and a list of aliases mapped to featuregroups
    */
   private static SQLJoinDTO getJoinStr(List<FeaturegroupDTO> featuregroupDTOS, String joinKey) {
     StringBuilder stringBuilder = new StringBuilder();
     for (int i = 1; i < featuregroupDTOS.size(); i++) {
       stringBuilder.append("JOIN " + getTableName(featuregroupDTOS.get(i).getName(),
-          featuregroupDTOS.get(i).getVersion()));
+        featuregroupDTOS.get(i).getVersion()));
       stringBuilder.append(" ");
     }
     stringBuilder.append("ON ");
@@ -561,7 +709,7 @@ public class FeaturestoreHelper {
       }
       if (i != 0 && i == (featuregroupDTOS.size() - 1)) {
         stringBuilder.append(
-            getTableName(featuregroupDTOS.get(0).getName(), featuregroupDTOS.get(0).getVersion()));
+          getTableName(featuregroupDTOS.get(0).getName(), featuregroupDTOS.get(0).getVersion()));
         stringBuilder.append(".`");
         stringBuilder.append(joinKey);
         stringBuilder.append("`=");
@@ -573,13 +721,15 @@ public class FeaturestoreHelper {
     }
     return new SQLJoinDTO(stringBuilder.toString(), featuregroupDTOS);
   }
-
+  
   /**
    * Helper method that returns the column among a shared column between featuregroups that is most often marked as
    * 'primary' in the hive schema.
    *
-   * @param commonCols       the list of columns shared between all featuregroups
-   * @param featuregroupDTOS the list of featuregroups
+   * @param commonCols
+   *   the list of columns shared between all featuregroups
+   * @param featuregroupDTOS
+   *   the list of featuregroups
    * @return the column among a shared column between featuregroups that is most often marked as 'primary'
    * in the hive schema
    */
@@ -589,8 +739,9 @@ public class FeaturestoreHelper {
       int primaryCount = 0;
       for (FeaturegroupDTO featuregroupDTO : featuregroupDTOS) {
         for (FeatureDTO featureDTO : featuregroupDTO.getFeatures()) {
-          if (featureDTO.getName().equalsIgnoreCase(commonCols[i]) && featureDTO.getPrimary())
+          if (featureDTO.getName().equalsIgnoreCase(commonCols[i]) && featureDTO.getPrimary()) {
             primaryCount++;
+          }
         }
       }
       primaryCounts[i] = primaryCount;
@@ -605,11 +756,12 @@ public class FeaturestoreHelper {
     }
     return commonCols[maxPrimaryCountIndex];
   }
-
+  
   /**
    * Method to infer a possible join column for a list of featuregroups
    *
-   * @param featuregroupDTOS the list of featuregroups
+   * @param featuregroupDTOS
+   *   the list of featuregroups
    * @return the join column
    */
   public static String getJoinColumn(List<FeaturegroupDTO> featuregroupDTOS) {
@@ -617,7 +769,7 @@ public class FeaturestoreHelper {
     Set<String> completeFeatureSet = new HashSet<>();
     for (FeaturegroupDTO featuregroupDTO : featuregroupDTOS) {
       List<String> columnNames =
-          featuregroupDTO.getFeatures().stream().map(feature -> feature.getName()).collect(Collectors.toList());
+        featuregroupDTO.getFeatures().stream().map(feature -> feature.getName()).collect(Collectors.toList());
       Set<String> featureSet = new HashSet<>(columnNames);
       completeFeatureSet.addAll(columnNames);
       featureSets.add(featureSet);
@@ -627,23 +779,24 @@ public class FeaturestoreHelper {
     }
     if (completeFeatureSet.isEmpty()) {
       List<String> featuregroupStrings =
-          featuregroupDTOS.stream()
-              .map(featuregroup -> featuregroup.getName()).collect(Collectors.toList());
+        featuregroupDTOS.stream()
+          .map(featuregroup -> featuregroup.getName()).collect(Collectors.toList());
       String featuregroupsStr = StringUtils.join(featuregroupStrings, ", ");
       throw new IllegalArgumentException("Could not find any common columns in featuregroups to join on," +
-          " searched through the following featuregroups: " + featuregroupsStr);
+        " searched through the following featuregroups: " + featuregroupsStr);
     }
     return getColumnThatIsPrimary(completeFeatureSet.toArray(new String[completeFeatureSet.size()]), featuregroupDTOS);
   }
-
+  
   /**
    * Converts a map of (featuregroup to version) to a list of featuregroupDTOs
    *
-   * @param featuregroupsAndVersions the map of (featuregroup to version)
+   * @param featuregroupsAndVersions
+   *   the map of (featuregroup to version)
    * @return a list of featuregroupDTOs
    */
   private static List<FeaturegroupDTO> convertFeaturegroupAndVersionToDTOs(
-      Map<String, Integer> featuregroupsAndVersions) {
+    Map<String, Integer> featuregroupsAndVersions) {
     List<FeaturegroupDTO> featuregroupDTOs = new ArrayList<>();
     for (Map.Entry<String, Integer> entry : featuregroupsAndVersions.entrySet()) {
       FeaturegroupDTO featuregroupDTO = new FeaturegroupDTO();
@@ -653,21 +806,26 @@ public class FeaturestoreHelper {
     }
     return featuregroupDTOs;
   }
-
+  
   /**
    * Gets a set of features from a featurestore and returns them as a Spark dataframe. This method is used if the user
    * has itself provided a set of featuregroups where the features are located and should be queried from, it does not
    * infer the featuregroups.
    *
-   * @param sparkSession             the spark session
-   * @param features                 the list of features to get
-   * @param featurestore             the featurestore to query
-   * @param featuregroupsAndVersions a map of (featuregroup to version) where the featuregroups are located
-   * @param joinKey                  the key to join on
+   * @param sparkSession
+   *   the spark session
+   * @param features
+   *   the list of features to get
+   * @param featurestore
+   *   the featurestore to query
+   * @param featuregroupsAndVersions
+   *   a map of (featuregroup to version) where the featuregroups are located
+   * @param joinKey
+   *   the key to join on
    * @return the resulting spark dataframe with the features
    */
   public static Dataset<Row> getFeatures(SparkSession sparkSession, List<String> features, String featurestore,
-                                         Map<String, Integer> featuregroupsAndVersions, String joinKey) {
+    Map<String, Integer> featuregroupsAndVersions, String joinKey) {
     useFeaturestore(sparkSession, featurestore);
     List<FeaturegroupDTO> featuregroupDTOs = convertFeaturegroupAndVersionToDTOs(featuregroupsAndVersions);
     useFeaturestore(sparkSession, featurestore);
@@ -683,27 +841,32 @@ public class FeaturestoreHelper {
     } else {
       SQLJoinDTO sqlJoinDTO = getJoinStr(featuregroupDTOs, joinKey);
       String sqlStr = "SELECT " + featuresStr + " FROM " +
-          getTableName(sqlJoinDTO.getFeaturegroupDTOS().get(0).getName(),
-              sqlJoinDTO.getFeaturegroupDTOS().get(0).getVersion())
-          + " " + sqlJoinDTO.getJoinStr();
+        getTableName(sqlJoinDTO.getFeaturegroupDTOS().get(0).getName(),
+          sqlJoinDTO.getFeaturegroupDTOS().get(0).getVersion())
+        + " " + sqlJoinDTO.getJoinStr();
       return logAndRunSQL(sparkSession, sqlStr);
     }
   }
-
+  
   /**
    * Gets a set of features from a featurestore and returns them as a Spark dataframe. This method will infer
    * in which featuregroups the features belong using metadata from the metastore
    *
-   * @param sparkSession          the spark session
-   * @param features              the list of features to get
-   * @param featurestore          the featurestore to query
-   * @param featuregroupsMetadata metadata about the featuregroups in the featurestore
-   * @param joinKey               the key to join on
+   * @param sparkSession
+   *   the spark session
+   * @param features
+   *   the list of features to get
+   * @param featurestore
+   *   the featurestore to query
+   * @param featuregroupsMetadata
+   *   metadata about the featuregroups in the featurestore
+   * @param joinKey
+   *   the key to join on
    * @return the resulting spark dataframe with the features
    */
   public static Dataset<Row> getFeatures(SparkSession sparkSession, List<String> features,
-                                         String featurestore, List<FeaturegroupDTO> featuregroupsMetadata,
-                                         String joinKey) {
+    String featurestore, List<FeaturegroupDTO> featuregroupsMetadata,
+    String joinKey) {
     useFeaturestore(sparkSession, featurestore);
     String featuresStr = StringUtils.join(features, ", ");
     List<FeaturegroupDTO> featureFeatureGroups = new ArrayList<>();
@@ -714,8 +877,8 @@ public class FeaturestoreHelper {
       featureFeatureGroups.add(featuregroupMatched);
     }
     List<String> featuregroupStrings =
-        featuregroupsMetadata.stream()
-            .map(fg -> getTableName(fg.getName(), fg.getVersion())).collect(Collectors.toList());
+      featuregroupsMetadata.stream()
+        .map(fg -> getTableName(fg.getName(), fg.getVersion())).collect(Collectors.toList());
     String featuregroupStr = StringUtils.join(featuregroupStrings, ", ");
     if (featuregroupsMetadata.size() == 1) {
       String sqlStr = "SELECT " + featuresStr + " FROM " + featuregroupStr;
@@ -723,59 +886,69 @@ public class FeaturestoreHelper {
     } else {
       SQLJoinDTO sqlJoinDTO = getJoinStr(featuregroupsMetadata, joinKey);
       String sqlStr = "SELECT " + featuresStr + " FROM " +
-          getTableName(sqlJoinDTO.getFeaturegroupDTOS().get(0).getName(),
-              sqlJoinDTO.getFeaturegroupDTOS().get(0).getVersion())
-          + " " + sqlJoinDTO.getJoinStr();
+        getTableName(sqlJoinDTO.getFeaturegroupDTOS().get(0).getName(),
+          sqlJoinDTO.getFeaturegroupDTOS().get(0).getVersion())
+        + " " + sqlJoinDTO.getJoinStr();
       return logAndRunSQL(sparkSession, sqlStr);
     }
   }
-
-
+  
+  
   /**
    * Runs an SQL query on the project's featurestore
    *
-   * @param sparkSession the spark session
-   * @param query        the query to run
-   * @param featurestore the featurestore to query
+   * @param sparkSession
+   *   the spark session
+   * @param query
+   *   the query to run
+   * @param featurestore
+   *   the featurestore to query
    * @return the resulting Spark dataframe
    */
   public static Dataset<Row> queryFeaturestore(SparkSession sparkSession, String query, String featurestore) {
     useFeaturestore(sparkSession, featurestore);
     return logAndRunSQL(sparkSession, query);
   }
-
+  
   /**
    * Runs an SQL query with SparkSQL and logs it
    *
-   * @param sparkSession the spark session
-   * @param sqlStr       the query to run
+   * @param sparkSession
+   *   the spark session
+   * @param sqlStr
+   *   the query to run
    * @return the resulting spark dataframe
    */
   private static Dataset<Row> logAndRunSQL(SparkSession sparkSession, String sqlStr) {
     LOG.log(Level.INFO, "Running sql: " + sqlStr);
     return sparkSession.sql(sqlStr);
   }
-
+  
   /**
    * Filters a list of featuregroups based on a user-provided map of featuregroup to version
    *
-   * @param featuregroupsAndVersions the map of featuregroup to version
-   * @param featuregroupsMetadata    the list of featuregroups to filter
+   * @param featuregroupsAndVersions
+   *   the map of featuregroup to version
+   * @param featuregroupsMetadata
+   *   the list of featuregroups to filter
    * @return filtered list of featuregroups
    */
   public static List<FeaturegroupDTO> filterFeaturegroupsBasedOnMap(
-      Map<String, Integer> featuregroupsAndVersions, List<FeaturegroupDTO> featuregroupsMetadata) {
+    Map<String, Integer> featuregroupsAndVersions, List<FeaturegroupDTO> featuregroupsMetadata) {
     return featuregroupsMetadata.stream().filter(
-        fgm -> featuregroupsAndVersions.get(fgm.getName()) != null
-            && fgm.getVersion().equals(featuregroupsAndVersions.get(fgm.getName()))).collect(Collectors.toList());
+      fgm -> featuregroupsAndVersions.get(fgm.getName()) != null
+        && fgm.getVersion().equals(featuregroupsAndVersions.get(fgm.getName()))).collect(Collectors.toList());
   }
-
+  
   /**
    * Converts a spark schema field into a FeatureDTO
    *
-   * @param field       the field to convert
-   * @param primaryKey  the name of the primary key for the featuregroup where the feature belongs
-   * @param partitionBy the features to partition a feature group on
+   * @param field
+   *   the field to convert
+   * @param primaryKey
+   *   the name of the primary key for the featuregroup where the feature belongs
+   * @param partitionBy
+   *   the features to partition a feature group on
    * @return the converted featureDTO
    */
   private static FeatureDTO convertFieldToFeature(StructField field, String primaryKey, List<String> partitionBy) {
@@ -790,25 +963,28 @@ public class FeaturestoreHelper {
       featureDesc = field.metadata().getString(Constants.JSON_FEATURE_DESCRIPTION);
     }
     if (field.metadata() != null && !field.metadata().contains(Constants.JSON_FEATURE_DESCRIPTION) &&
-        field.getComment().isDefined()) {
+      field.getComment().isDefined()) {
       featureDesc = field.getComment().get();
     }
     if (featureDesc.isEmpty()) {
       featureDesc = "-"; //comment should be non-empty
     }
     Boolean partition = false;
-    if(partitionBy != null && partitionBy.contains(featureName)){
+    if (partitionBy != null && partitionBy.contains(featureName)) {
       partition = true;
     }
     return new FeatureDTO(featureName, featureType, featureDesc, primary, partition);
   }
-
+  
   /**
    * Parses a spark schema into a list of FeatureDTOs
    *
-   * @param sparkSchema the spark schema to parse
-   * @param primaryKey  the name of the primary key for the featuregroup where the feature belongs
-   * @param partitionBy the features to partition a feature group on
+   * @param sparkSchema
+   *   the spark schema to parse
+   * @param primaryKey
+   *   the name of the primary key for the featuregroup where the feature belongs
+   * @param partitionBy
+   *   the features to partition a feature group on
    * @return a list of feature DTOs
    */
   public static List<FeatureDTO> parseSparkFeaturesSchema(StructType sparkSchema, String primaryKey,
@@ -820,28 +996,32 @@ public class FeaturestoreHelper {
     }
     return features;
   }
-
+  
   /**
    * Utility method for getting the default primary key of a featuregroup that is to be created if no other primary
    * key have been provided by the user
    *
-   * @param featuregroupDf the spark dataframe to create the featuregroup from
+   * @param featuregroupDf
+   *   the spark dataframe to create the featuregroup from
    * @return the name of the column that is the primary key
    */
   public static String getDefaultPrimaryKey(Dataset<Row> featuregroupDf) {
     return featuregroupDf.dtypes()[0]._1;
   }
-
+  
   /**
    * Utility method for validating a primary key provided by a user for a new featuregroup
    *
-   * @param featuregroupDf the spark dataframe to create the featuregroup from
-   * @param primaryKey     the provided primary key
+   * @param featuregroupDf
+   *   the spark dataframe to create the featuregroup from
+   * @param primaryKey
+   *   the provided primary key
    * @return true or false depending on if primary key is valid or not
-   * @throws InvalidPrimaryKeyForFeaturegroup InvalidPrimaryKeyForFeaturegroup
+   * @throws InvalidPrimaryKeyForFeaturegroup
+   *   InvalidPrimaryKeyForFeaturegroup
    */
   public static Boolean validatePrimaryKey(Dataset<Row> featuregroupDf, String primaryKey)
-      throws InvalidPrimaryKeyForFeaturegroup {
+    throws InvalidPrimaryKeyForFeaturegroup {
     List<String> columns = new ArrayList<>();
     for (int i = 0; i < featuregroupDf.dtypes().length; i++) {
       columns.add(featuregroupDf.dtypes()[i]._1.toLowerCase());
@@ -850,55 +1030,65 @@ public class FeaturestoreHelper {
       return true;
     } else {
       throw new InvalidPrimaryKeyForFeaturegroup("Invalid primary Key: " + primaryKey
-          + ", the specified primary key does not exist among the available columns: " +
-          StringUtils.join(",", columns));
+        + ", the specified primary key does not exist among the available columns: " +
+        StringUtils.join(",", columns));
     }
   }
-
+  
   /**
    * Validates metadata provided by the user when creating new feature groups and training datasets
    *
-   * @param name the name of the feature group/training dataset
-   * @param dtypes the schema of the provided spark dataframe
-   * @param dependencies the list of data dependencies of the feature group / training dataset
-   * @param description the description about the feature group/training dataset
+   * @param name
+   *   the name of the feature group/training dataset
+   * @param dtypes
+   *   the schema of the provided spark dataframe
+   * @param dependencies
+   *   the list of data dependencies of the feature group / training dataset
+   * @param description
+   *   the description about the feature group/training dataset
    */
   public static void validateMetadata(String name, Tuple2<String, String>[] dtypes,
-                                      List<String> dependencies, String description) {
+    List<String> dependencies, String description) {
     Pattern namePattern = Pattern.compile("^[a-zA-Z0-9_]+$");
-    if (name.length() > 256 || name.equals("") || !namePattern.matcher(name).matches())
+    if (name.length() > 256 || name.equals("") || !namePattern.matcher(name).matches()) {
       throw new IllegalArgumentException("Name of feature group/training dataset cannot be empty, " +
-          "cannot exceed 256 characters, cannot contain hyphens ('-') " +
-          "and must match the regular expression: ^[a-zA-Z0-9_]+$" +
-          " the provided name: " + name + " is not valid");
-
-    if (dtypes.length == 0)
+        "cannot exceed 256 characters, cannot contain hyphens ('-') " +
+        "and must match the regular expression: ^[a-zA-Z0-9_]+$" +
+        " the provided name: " + name + " is not valid");
+    }
+  
+    if (dtypes.length == 0) {
       throw new IllegalArgumentException("Cannot create a feature group from an empty spark dataframe");
-
+    }
+    
     for (int i = 0; i < dtypes.length; i++) {
-      if (dtypes[i]._1.length() > 767 || dtypes[i]._1.equals("") || !namePattern.matcher(dtypes[i]._1).matches())
+      if (dtypes[i]._1.length() > 767 || dtypes[i]._1.equals("") || !namePattern.matcher(dtypes[i]._1).matches()) {
         throw new IllegalArgumentException("Name of feature column cannot be empty, cannot exceed 767 characters," +
-            ", cannot contains hyphens ('-'), and must match the regular expression: ^[a-zA-Z0-9_]+$, " +
-            "the provided feature name: " + dtypes[i]._1 +
-            " is not valid");
+          ", cannot contains hyphens ('-'), and must match the regular expression: ^[a-zA-Z0-9_]+$, " +
+          "the provided feature name: " + dtypes[i]._1 +
+          " is not valid");
+      }
     }
     if (new HashSet<>(dependencies).size() != dependencies.size()) {
       String dependenciesStr = StringUtils.join(dependencies, ",");
       throw new IllegalArgumentException("The list of data dependencies contains duplicates: " + dependenciesStr);
     }
-
-    if(description.length() > 2000)
+  
+    if (description.length() > 2000) {
       throw new IllegalArgumentException("Feature group/Training dataset description should not exceed " +
-          "the maximum length of 2000 characters, " +
-          "the provided description has length:" + dependencies.size());
+        "the maximum length of 2000 characters, " +
+        "the provided description has length:" + dependencies.size());
+    }
   }
-
+  
   /**
    * Converts a list of FeatureDTOs into a JSONArray
    *
-   * @param featureDTOS the list of FeatureDTOs to convert
+   * @param featureDTOS
+   *   the list of FeatureDTOs to convert
    * @return a JSONArray with the features
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static JSONArray convertFeatureDTOsToJsonObjects(List<FeatureDTO> featureDTOS) throws JAXBException {
     JSONArray features = new JSONArray();
@@ -907,29 +1097,35 @@ public class FeaturestoreHelper {
     }
     return features;
   }
-
+  
   /**
    * Converts a generic DTO into a JSONObject
    *
-   * @param marshaller the JAXB marshaller to use for the conversion
-   * @param object     the object to convert
+   * @param marshaller
+   *   the JAXB marshaller to use for the conversion
+   * @param object
+   *   the object to convert
    * @return the converted JSONObject
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static JSONObject dtoToJson(Marshaller marshaller, Object object) throws JAXBException {
-    if (object == null)
+    if (object == null) {
       return null;
+    }
     StringWriter sw = new StringWriter();
     marshaller.marshal(object, sw);
     return new JSONObject(sw.toString());
   }
-
+  
   /**
    * Gets an unmarshaller for a specific JAXBContext
    *
-   * @param jaxbContext the jaxb context to get the unmarshaller for
+   * @param jaxbContext
+   *   the jaxb context to get the unmarshaller for
    * @return the unmarshaller
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static Unmarshaller getUnmarshaller(JAXBContext jaxbContext) throws JAXBException {
     Unmarshaller unmarshaller = jaxbContext.createUnmarshaller();
@@ -937,87 +1133,100 @@ public class FeaturestoreHelper {
     unmarshaller.setProperty(MarshallerProperties.MEDIA_TYPE, MediaType.APPLICATION_JSON);
     return unmarshaller;
   }
-
+  
   /**
    * Converts a FeatureCorrelationMatrixDTO into a JSONObject
    *
-   * @param featureCorrelationMatrixDTO the DTO to convert
+   * @param featureCorrelationMatrixDTO
+   *   the DTO to convert
    * @return the JSONObject
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static JSONObject convertFeatureCorrelationMatrixDTOToJsonObject(
-      FeatureCorrelationMatrixDTO featureCorrelationMatrixDTO) throws JAXBException {
+    FeatureCorrelationMatrixDTO featureCorrelationMatrixDTO) throws JAXBException {
     return dtoToJson(featureCorrelationMarshaller, featureCorrelationMatrixDTO);
   }
-
+  
   /**
    * Converts a DescriptiveStatsDTO into a JSONObject
    *
-   * @param descriptiveStatsDTO the DTO to convert
+   * @param descriptiveStatsDTO
+   *   the DTO to convert
    * @return the JSON object
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static JSONObject convertDescriptiveStatsDTOToJsonObject(
-      DescriptiveStatsDTO descriptiveStatsDTO) throws JAXBException {
+    DescriptiveStatsDTO descriptiveStatsDTO) throws JAXBException {
     return dtoToJson(descriptiveStatsMarshaller, descriptiveStatsDTO);
   }
-
+  
   /**
    * Converts a FeatureDistributionsDTO into a JSONObject
    *
-   * @param featureDistributionsDTO the DTO to convert
+   * @param featureDistributionsDTO
+   *   the DTO to convert
    * @return the JSON object
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static JSONObject convertFeatureDistributionsDTOToJsonObject(
-      FeatureDistributionsDTO featureDistributionsDTO) throws JAXBException {
+    FeatureDistributionsDTO featureDistributionsDTO) throws JAXBException {
     return dtoToJson(featureHistogramsMarshaller, featureDistributionsDTO);
   }
-
+  
   /**
    * Converts a ClusterAnalysisDTO into a JSONObject
    *
-   * @param clusterAnalysisDTO the DTO to convert
+   * @param clusterAnalysisDTO
+   *   the DTO to convert
    * @return the JSON object
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static JSONObject convertClusterAnalysisDTOToJsonObject(
-      ClusterAnalysisDTO clusterAnalysisDTO) throws JAXBException {
+    ClusterAnalysisDTO clusterAnalysisDTO) throws JAXBException {
     return dtoToJson(clusteranalysisMarshaller, clusterAnalysisDTO);
   }
-
+  
   /**
    * Parses FeaturestoreMetadata JSON into a DTO
    *
-   * @param featurestoreMetadata the JSON to parse
+   * @param featurestoreMetadata
+   *   the JSON to parse
    * @return the DTO
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static FeaturestoreMetadataDTO parseFeaturestoreMetadataJson(JSONObject featurestoreMetadata)
-      throws JAXBException {
+    throws JAXBException {
     Unmarshaller unmarshaller = getUnmarshaller(featurestoreMetadataJAXBContext);
     StreamSource json = new StreamSource(new StringReader(featurestoreMetadata.toString()));
     return unmarshaller.unmarshal(json, FeaturestoreMetadataDTO.class).getValue();
   }
-
+  
   /**
    * Parses training dataset JSON into a DTO
    *
-   * @param trainingDatasetJson the JSON to parse
+   * @param trainingDatasetJson
+   *   the JSON to parse
    * @return the DTO
-   * @throws JAXBException JAXBException
+   * @throws JAXBException
+   *   JAXBException
    */
   public static TrainingDatasetDTO parseTrainingDatasetJson(JSONObject trainingDatasetJson)
-      throws JAXBException {
+    throws JAXBException {
     Unmarshaller unmarshaller = getUnmarshaller(trainingDatasetJAXBContext);
     StreamSource json = new StreamSource(new StringReader(trainingDatasetJson.toString()));
     return unmarshaller.unmarshal(json, TrainingDatasetDTO.class).getValue();
   }
-
+  
   /**
    * Filters a spark dataframe to only keep numeric columns
    *
-   * @param sparkDf the spark dataframe to filter
+   * @param sparkDf
+   *   the spark dataframe to filter
    * @return the filtered dataframe with only numeric columns
    */
   private static Dataset<Row> filterSparkDfNumeric(Dataset<Row> sparkDf) {
@@ -1032,11 +1241,12 @@ public class FeaturestoreHelper {
     numericColumnNames.toArray(numericColumnNamesArr);
     return sparkDf.select(numericColumnNamesArr);
   }
-
+  
   /**
    * Computes descriptive statistics for a spark dataframe using spark
    *
-   * @param sparkDf the dataframe to compute statistics for
+   * @param sparkDf
+   *   the dataframe to compute statistics for
    * @return the computed statistics
    */
   private static DescriptiveStatsDTO computeDescriptiveStatistics(Dataset<Row> sparkDf) {
@@ -1059,8 +1269,9 @@ public class FeaturestoreHelper {
             Float value;
             try {
               value = Float.parseFloat(rawStatObj.getString(colName));
-              if (value.isNaN() || value.isInfinite())
+              if (value.isNaN() || value.isInfinite()) {
                 value = null;
+              }
             } catch (NullPointerException | NumberFormatException e) {
               value = null;
             }
@@ -1079,12 +1290,14 @@ public class FeaturestoreHelper {
     descriptiveStatsDTO.setDescriptiveStats(descriptiveStatsMetricValuesDTOList);
     return descriptiveStatsDTO;
   }
-
+  
   /**
    * Computes cluster analysis statistics for a spark dataframe
    *
-   * @param sparkDf  the spark dataframe to compute statistics for
-   * @param clusters the number of clusters to use in the statistics
+   * @param sparkDf
+   *   the spark dataframe to compute statistics for
+   * @param clusters
+   *   the number of clusters to use in the statistics
    * @return the computed statistics
    */
   private static ClusterAnalysisDTO computeClusterAnalysis(Dataset<Row> sparkDf, int clusters) {
@@ -1103,11 +1316,12 @@ public class FeaturestoreHelper {
     Dataset<Row> sparkDf3 = sparkDf2.select(cols);
     Dataset<Row> sparkDf4;
     Long count = sparkDf3.count();
-    if (count < Constants.CLUSTERING_ANALYSIS_SAMPLE_SIZE)
+    if (count < Constants.CLUSTERING_ANALYSIS_SAMPLE_SIZE) {
       sparkDf4 = sparkDf3;
-    else
+    } else {
       sparkDf4 = sparkDf3.sample(true,
-          ((float) Constants.CLUSTERING_ANALYSIS_SAMPLE_SIZE) / ((float) count));
+        ((float) Constants.CLUSTERING_ANALYSIS_SAMPLE_SIZE) / ((float) count));
+    }
     PCA pca = new PCA();
     pca.setK(2);
     pca.setInputCol(Constants.CLUSTERING_ANALYSIS_INPUT_COLUMN);
@@ -1117,12 +1331,12 @@ public class FeaturestoreHelper {
     cols[1] = col(Constants.CLUSTERING_ANALYSIS_OUTPUT_COLUMN);
     Dataset<Row> sparkDf5 = pcaModel.transform(sparkDf4).select(cols);
     Dataset<Row> sparkDf6 = sparkDf5.withColumnRenamed(
-        Constants.CLUSTERING_ANALYSIS_PCA_COLUMN,
-        Constants.CLUSTERING_ANALYSIS_FEATURES_COLUMN
+      Constants.CLUSTERING_ANALYSIS_PCA_COLUMN,
+      Constants.CLUSTERING_ANALYSIS_FEATURES_COLUMN
     );
     Dataset<Row> sparkDf7 = sparkDf6.withColumnRenamed(
-        Constants.CLUSTERING_ANALYSIS_OUTPUT_COLUMN,
-        Constants.CLUSTERING_ANALYSIS_CLUSTERS_OUTPUT_COLUMN);
+      Constants.CLUSTERING_ANALYSIS_OUTPUT_COLUMN,
+      Constants.CLUSTERING_ANALYSIS_CLUSTERS_OUTPUT_COLUMN);
     String[] jsonStrResult = (String[]) sparkDf7.toJSON().collect();
     ClusterAnalysisDTO clusterAnalysisDTO = new ClusterAnalysisDTO();
     List<ClusterDTO> clusterDTOs = new ArrayList<>();
@@ -1159,38 +1373,40 @@ public class FeaturestoreHelper {
     clusterAnalysisDTO.setDataPoints(datapointDTOs);
     return clusterAnalysisDTO;
   }
-
+  
   /**
    * Computes feature correlation statistics for a spark dataframe
    *
-   * @param sparkDf           the spark dataframe to compute correlation statistics for
-   * @param correlationMethod the method to use for computing the correlations
+   * @param sparkDf
+   *   the spark dataframe to compute correlation statistics for
+   * @param correlationMethod
+   *   the method to use for computing the correlations
    * @return the computed statistics
    */
   private static FeatureCorrelationMatrixDTO computeCorrMatrix(Dataset<Row> sparkDf, String correlationMethod) {
     int numberOfColumns = sparkDf.dtypes().length;
     if (numberOfColumns == 0) {
       throw new IllegalArgumentException(
-          "The provided spark dataframe does not contain any numeric columns.\n" +
-              "Cannot compute feature correlation on categorical columns. \n The numeric datatypes are:" +
-              StringUtils.join(Constants.NUMERIC_SPARK_TYPES, ",") + " \n " +
-              "The number of numeric datatypes in the provided dataframe is: " + numberOfColumns +
-              "(" + Arrays.toString(sparkDf.dtypes()) + ")");
+        "The provided spark dataframe does not contain any numeric columns.\n" +
+          "Cannot compute feature correlation on categorical columns. \n The numeric datatypes are:" +
+          StringUtils.join(Constants.NUMERIC_SPARK_TYPES, ",") + " \n " +
+          "The number of numeric datatypes in the provided dataframe is: " + numberOfColumns +
+          "(" + Arrays.toString(sparkDf.dtypes()) + ")");
     }
     if (numberOfColumns == 1) {
       throw new IllegalArgumentException(
-          "The provided spark dataframe only contains one numeric column.\n" +
-              "Cannot compute feature correlation on just one column. \n The numeric datatypes are:" +
-              StringUtils.join(Constants.NUMERIC_SPARK_TYPES, ",") + " \n " +
-              "The number of numeric datatypes in the provided dataframe is: " + numberOfColumns +
-              "(" + Arrays.toString(sparkDf.dtypes()) + ")");
+        "The provided spark dataframe only contains one numeric column.\n" +
+          "Cannot compute feature correlation on just one column. \n The numeric datatypes are:" +
+          StringUtils.join(Constants.NUMERIC_SPARK_TYPES, ",") + " \n " +
+          "The number of numeric datatypes in the provided dataframe is: " + numberOfColumns +
+          "(" + Arrays.toString(sparkDf.dtypes()) + ")");
     }
     if (numberOfColumns > Constants.MAX_CORRELATION_MATRIX_COLUMNS) {
       throw new IllegalArgumentException(
-          "The provided spark dataframe have " + numberOfColumns +
-              " columns, which exceeds the maximum number of columns: " + Constants.MAX_CORRELATION_MATRIX_COLUMNS +
-              ". This is due to scalability reasons (number of correlatons grows quadratically with the " +
-              "number of columns");
+        "The provided spark dataframe have " + numberOfColumns +
+          " columns, which exceeds the maximum number of columns: " + Constants.MAX_CORRELATION_MATRIX_COLUMNS +
+          ". This is due to scalability reasons (number of correlatons grows quadratically with the " +
+          "number of columns");
     }
     Dataset<Row> sparkDf1 = assembleColumnsIntoVector(sparkDf, Constants.CORRELATION_ANALYSIS_INPUT_COLUMN);
     Row firstRow = Correlation.corr(sparkDf1, Constants.CORRELATION_ANALYSIS_INPUT_COLUMN, correlationMethod).head();
@@ -1211,8 +1427,9 @@ public class FeaturestoreHelper {
         correlationValueDTO.setFeatureName(featureName2);
         try {
           Float corr = (float) correlationMatrix.apply(i, j);
-          if (corr.isNaN() || corr.isInfinite())
+          if (corr.isNaN() || corr.isInfinite()) {
             corr = 0.0f;
+          }
           correlationValueDTO.setCorrelation(corr);
         } catch (ClassCastException e) {
           correlationValueDTO.setCorrelation(0.0f);
@@ -1225,12 +1442,14 @@ public class FeaturestoreHelper {
     featureCorrelationMatrixDTO.setFeatureCorrelations(featureCorrelationDTOList);
     return featureCorrelationMatrixDTO;
   }
-
+  
   /**
    * A method for assembling all columns in a spark dataframe into a DenseVector
    *
-   * @param sparkDf the sparkdataframe to assemble columns for
-   * @param colName the output column name of the DenseVector column
+   * @param sparkDf
+   *   the sparkdataframe to assemble columns for
+   * @param colName
+   *   the output column name of the DenseVector column
    * @return a spark dataframe with an extra column containing the assembled columns in a DenseVector
    */
   private static Dataset<Row> assembleColumnsIntoVector(Dataset<Row> sparkDf, String colName) {
@@ -1245,46 +1464,50 @@ public class FeaturestoreHelper {
     vectorAssembler.setOutputCol(colName);
     return vectorAssembler.transform(sparkDf);
   }
-
+  
   /**
    * Computes feature histogram statistics for all columns in a spark dataframe
    *
-   * @param sparkDf the spark dataframe to compute statistics for
-   * @param numBins the number of bins to use for the histograms
+   * @param sparkDf
+   *   the spark dataframe to compute statistics for
+   * @param numBins
+   *   the number of bins to use for the histograms
    * @return the computed statistics
-   * @throws SparkDataTypeNotRecognizedError if the spark datatype is not recognized
+   * @throws SparkDataTypeNotRecognizedError
+   *   if the spark datatype is not recognized
    */
   private static FeatureDistributionsDTO computeFeatureHistograms(Dataset<Row> sparkDf, int numBins)
-      throws SparkDataTypeNotRecognizedError {
+    throws SparkDataTypeNotRecognizedError {
     List<FeatureDistributionDTO> featureDistributionDTOS = new ArrayList<>();
     for (int i = 0; i < sparkDf.schema().fields().length; i++) {
       Tuple2<double[], long[]> colHist = null;
       if (sparkDf.schema().fields()[i].dataType() instanceof IntegerType) {
         colHist = sparkDf.select(sparkDf.dtypes()[i]._1).
-            toJavaRDD().map(x -> Double.valueOf(x.getInt(0))).mapToDouble(x -> x).histogram(numBins);
+          toJavaRDD().map(x -> Double.valueOf(x.getInt(0))).mapToDouble(x -> x).histogram(numBins);
       }
       if (sparkDf.schema().fields()[i].dataType() instanceof DecimalType) {
         colHist = sparkDf.select(sparkDf.dtypes()[i]._1).
-            toJavaRDD().map(x -> x.getDecimal(0).doubleValue()).mapToDouble(x -> x).histogram(numBins);
+          toJavaRDD().map(x -> x.getDecimal(0).doubleValue()).mapToDouble(x -> x).histogram(numBins);
       }
       if (sparkDf.schema().fields()[i].dataType() instanceof DoubleType) {
         colHist = sparkDf.select(sparkDf.dtypes()[i]._1).
-            toJavaRDD().map(x -> x.getDouble(0)).mapToDouble(x -> x).histogram(numBins);
+          toJavaRDD().map(x -> x.getDouble(0)).mapToDouble(x -> x).histogram(numBins);
       }
       if (sparkDf.schema().fields()[i].dataType() instanceof FloatType) {
         colHist = sparkDf.select(sparkDf.dtypes()[i]._1).
-            toJavaRDD().map(x -> (double) x.getFloat(0)).mapToDouble(x -> x).histogram(numBins);
+          toJavaRDD().map(x -> (double) x.getFloat(0)).mapToDouble(x -> x).histogram(numBins);
       }
       if (sparkDf.schema().fields()[i].dataType() instanceof LongType) {
         colHist = sparkDf.select(sparkDf.dtypes()[i]._1).
-            toJavaRDD().map(x -> (double) x.getLong(0)).mapToDouble(x -> x).histogram(numBins);
+          toJavaRDD().map(x -> (double) x.getLong(0)).mapToDouble(x -> x).histogram(numBins);
       }
       if (sparkDf.schema().fields()[i].dataType() instanceof ShortType) {
         colHist = sparkDf.select(sparkDf.dtypes()[i]._1).
-            toJavaRDD().map(x -> (double) x.getShort(0)).mapToDouble(x -> x).histogram(numBins);
+          toJavaRDD().map(x -> (double) x.getShort(0)).mapToDouble(x -> x).histogram(numBins);
       }
-      if (colHist == null)
+      if (colHist == null) {
         throw new SparkDataTypeNotRecognizedError("Could not parse the spark datatypes to compute feature histograms");
+      }
       double[] bins = colHist._1;
       long[] frequencies = colHist._2;
       FeatureDistributionDTO featureDistributionDTO = new FeatureDistributionDTO();
@@ -1304,40 +1527,56 @@ public class FeaturestoreHelper {
     featureDistributionsDTO.setFeatureDistributions(featureDistributionDTOS);
     return featureDistributionsDTO;
   }
-
+  
   /**
    * Helper function that computes statistics of a featuregroup or training dataset using spark
    *
-   * @param name                  the featuregroup or training dataset to update statistics for
-   * @param sparkSession          the spark session
-   * @param sparkDf               If a spark df is provided it will be used to compute statistics,
-   *                              otherwise the dataframe of the
-   *                              featuregroup will be fetched dynamically from the featurestore
-   * @param featurestore          the featurestore where the featuregroup or training dataset resides
-   * @param version               the version of the featuregroup/training dataset (defaults to 1)
-   * @param descriptiveStatistics a boolean flag whether to compute descriptive statistics (min,max,mean etc)
-   *                              for the featuregroup/training dataset
-   * @param featureCorrelation    a boolean flag whether to compute a feature correlation matrix for the numeric columns
-   *                              in the featuregroup/training dataset
-   * @param featureHistograms     a boolean flag whether to compute histograms for the numeric columns in the
-   *                              featuregroup/training dataset
-   * @param clusterAnalysis       a boolean flag whether to compute cluster analysis for the numeric columns in the
-   *                              featuregroup/training dataset
-   * @param statColumns           a list of columns to compute statistics for (defaults to all columns that are numeric)
-   * @param numBins               number of bins to use for computing histograms
-   * @param numClusters           the number of clusters to use for cluster analysis (k-means)
-   * @param correlationMethod     the method to compute feature correlation with (pearson or spearman)
+   * @param name
+   *   the featuregroup or training dataset to update statistics for
+   * @param sparkSession
+   *   the spark session
+   * @param sparkDf
+   *   If a spark df is provided it will be used to compute statistics,
+   *   otherwise the dataframe of the
+   *   featuregroup will be fetched dynamically from the featurestore
+   * @param featurestore
+   *   the featurestore where the featuregroup or training dataset resides
+   * @param version
+   *   the version of the featuregroup/training dataset (defaults to 1)
+   * @param descriptiveStatistics
+   *   a boolean flag whether to compute descriptive statistics (min,max,mean etc)
+   *   for the featuregroup/training dataset
+   * @param featureCorrelation
+   *   a boolean flag whether to compute a feature correlation matrix for the numeric columns
+   *   in the featuregroup/training dataset
+   * @param featureHistograms
+   *   a boolean flag whether to compute histograms for the numeric columns in the
+   *   featuregroup/training dataset
+   * @param clusterAnalysis
+   *   a boolean flag whether to compute cluster analysis for the numeric columns in the
+   *   featuregroup/training dataset
+   * @param statColumns
+   *   a list of columns to compute statistics for (defaults to all columns that are numeric)
+   * @param numBins
+   *   number of bins to use for computing histograms
+   * @param numClusters
+   *   the number of clusters to use for cluster analysis (k-means)
+   * @param correlationMethod
+   *   the method to compute feature correlation with (pearson or spearman)
    * @return the computed statistics in a DTO
-   * @throws DataframeIsEmpty DataframeIsEmpty
-   * @throws SparkDataTypeNotRecognizedError SparkDataTypeNotRecognizedError
-   * @throws FeaturestoreNotFound FeaturestoreNotFound
+   * @throws DataframeIsEmpty
+   *   DataframeIsEmpty
+   * @throws SparkDataTypeNotRecognizedError
+   *   SparkDataTypeNotRecognizedError
+   * @throws FeaturestoreNotFound
+   *   FeaturestoreNotFound
    */
   public static StatisticsDTO computeDataFrameStats(
-      String name, SparkSession sparkSession, Dataset<Row> sparkDf, String featurestore,
-      int version, Boolean descriptiveStatistics, Boolean featureCorrelation,
-      Boolean featureHistograms, Boolean clusterAnalysis,
-      List<String> statColumns, int numBins, int numClusters,
-      String correlationMethod) throws DataframeIsEmpty, SparkDataTypeNotRecognizedError, FeaturestoreNotFound {
+    String name, SparkSession sparkSession, Dataset<Row> sparkDf, String featurestore,
+    int version, Boolean descriptiveStatistics, Boolean featureCorrelation,
+    Boolean featureHistograms, Boolean clusterAnalysis,
+    List<String> statColumns, int numBins, int numClusters,
+    String correlationMethod) throws DataframeIsEmpty, SparkDataTypeNotRecognizedError, FeaturestoreNotFound {
     if (sparkDf == null) {
       sparkDf = getFeaturegroup(sparkSession, name, featurestore, version);
     }
@@ -1347,102 +1586,109 @@ public class FeaturestoreHelper {
       statSparkColumns.toArray(sparkColumnsArr);
       sparkDf = sparkDf.select(sparkColumnsArr);
     }
-
+    
     if (sparkDf.rdd().isEmpty()) {
       throw new DataframeIsEmpty("The provided dataframe is empty, " +
-          "cannot compute feature statistics on an empty dataframe");
+        "cannot compute feature statistics on an empty dataframe");
     }
     ClusterAnalysisDTO clusterAnalysisDTO = null;
     DescriptiveStatsDTO descriptiveStatsDTO = null;
     FeatureCorrelationMatrixDTO featureCorrelationMatrixDTO = null;
     FeatureDistributionsDTO featureDistributionsDTO = null;
-
+    
     if (descriptiveStatistics) {
       try {
         LOG.log(Level.INFO, "computing descriptive statistics for: " + name);
         sparkSession.sparkContext().setJobGroup("Descriptive Statistics Computation",
-            "Analyzing Dataframe Statistics for : " + name, true);
+          "Analyzing Dataframe Statistics for : " + name, true);
         descriptiveStatsDTO = computeDescriptiveStatistics(sparkDf);
         sparkSession.sparkContext().setJobGroup("", "", true);
       } catch (Exception e) {
         LOG.log(Level.WARNING, "Could not compute descriptive statistics for:" + name +
-            "set the optional argument descriptive_statistics=False to skip this step. Error: " + e.getMessage());
+          "set the optional argument descriptive_statistics=False to skip this step. Error: " + e.getMessage());
       }
     }
-
+    
     if (featureCorrelation) {
       try {
         LOG.log(Level.INFO, "computing feature correlation for: " + name);
         sparkSession.sparkContext().setJobGroup("Feature Correlation Computation",
-            "Analyzing Feature Correlations for: " + name, true);
+          "Analyzing Feature Correlations for: " + name, true);
         Dataset<Row> numericSparkDf = filterSparkDfNumeric(sparkDf);
         featureCorrelationMatrixDTO = computeCorrMatrix(numericSparkDf, correlationMethod);
         sparkSession.sparkContext().setJobGroup("", "", true);
       } catch (Exception e) {
         LOG.log(Level.WARNING, "Could not compute feature correlation for:" + name +
-            "set the optional argument feature_correlation=False to skip this step. Error: " + e.getMessage());
+          "set the optional argument feature_correlation=False to skip this step. Error: " + e.getMessage());
       }
     }
-
+    
     if (featureHistograms) {
       try {
         LOG.log(Level.INFO, "computing feature histograms for: " + name);
         sparkSession.sparkContext().setJobGroup("Feature Histogram Computation",
-            "Analyzing Feature Distributions for: " + name, true);
+          "Analyzing Feature Distributions for: " + name, true);
         Dataset<Row> numericSparkDf = filterSparkDfNumeric(sparkDf);
         featureDistributionsDTO = computeFeatureHistograms(numericSparkDf, numBins);
         sparkSession.sparkContext().setJobGroup("", "", true);
       } catch (Exception e) {
         LOG.log(Level.WARNING, "Could not compute feature histograms for:" + name +
-            "set the optional argument feature_histograms=False to skip this step. Error: " + e.getMessage());
+          "set the optional argument feature_histograms=False to skip this step. Error: " + e.getMessage());
       }
     }
-
+    
     if (clusterAnalysis) {
       try {
         LOG.log(Level.INFO, "computing cluster analysis for: " + name);
         sparkSession.sparkContext().setJobGroup("Feature Cluster Analysis",
-            "Analyzing Feature Clusters for: " + name, true);
+          "Analyzing Feature Clusters for: " + name, true);
         Dataset<Row> numericSparkDf = filterSparkDfNumeric(sparkDf);
         clusterAnalysisDTO = computeClusterAnalysis(numericSparkDf, numClusters);
         sparkSession.sparkContext().setJobGroup("", "", true);
       } catch (Exception e) {
         LOG.log(Level.WARNING, "Could not compute cluster analysis for:" + name +
-            "set the optional argument cluster_analysis=False to skip this step. Error: " + e.getMessage());
+          "set the optional argument cluster_analysis=False to skip this step. Error: " + e.getMessage());
       }
     }
     return new StatisticsDTO(
-        descriptiveStatsDTO, clusterAnalysisDTO, featureCorrelationMatrixDTO, featureDistributionsDTO);
-
+      descriptiveStatsDTO, clusterAnalysisDTO, featureCorrelationMatrixDTO, featureDistributionsDTO);
+    
   }
-
+  
   /**
    * Materializes a training dataset dataframe to HDFS
    *
-   * @param sparkSession the spark session
-   * @param sparkDf      the spark dataframe to materialize
-   * @param hdfsPath     the HDFS path
-   * @param dataFormat   the format to serialize to
-   * @param writeMode    the spark write mode (append/overwrite)
-   * @throws TrainingDatasetFormatNotSupportedError if the provided dataframe format is not supported, supported formats
-   * are tfrecords, csv, tsv, avro, orc, image and parquet
-   * @throws CannotWriteImageDataFrameException if the user tries to save a dataframe in image format
+   * @param sparkSession
+   *   the spark session
+   * @param sparkDf
+   *   the spark dataframe to materialize
+   * @param hdfsPath
+   *   the HDFS path
+   * @param dataFormat
+   *   the format to serialize to
+   * @param writeMode
+   *   the spark write mode (append/overwrite)
+   * @throws TrainingDatasetFormatNotSupportedError
+   *   if the provided dataframe format is not supported, supported formats
+   *   are tfrecords, csv, tsv, avro, orc, image and parquet
+   * @throws CannotWriteImageDataFrameException
+   *   if the user tries to save a dataframe in image format
    */
   public static void writeTrainingDatasetHdfs(SparkSession sparkSession, Dataset<Row> sparkDf,
-                                              String hdfsPath, String dataFormat, String writeMode) throws
-      TrainingDatasetFormatNotSupportedError, CannotWriteImageDataFrameException {
+    String hdfsPath, String dataFormat, String writeMode) throws
+    TrainingDatasetFormatNotSupportedError, CannotWriteImageDataFrameException {
     sparkSession.sparkContext().setJobGroup("Materializing dataframe as training dataset",
-        "Saving training dataset in path: " + hdfsPath + ", in format: " + dataFormat, true);
+      "Saving training dataset in path: " + hdfsPath + ", in format: " + dataFormat, true);
     switch (dataFormat) {
       case Constants.TRAINING_DATASET_CSV_FORMAT:
         sparkDf.write().option(Constants.SPARK_WRITE_DELIMITER, Constants.COMMA_DELIMITER).mode(
-            writeMode).option(Constants.SPARK_WRITE_HEADER, "true").csv(hdfsPath);
+          writeMode).option(Constants.SPARK_WRITE_HEADER, "true").csv(hdfsPath);
         sparkSession.sparkContext().setJobGroup("", "", true);
         break;
       case Constants.TRAINING_DATASET_TSV_FORMAT:
         sparkDf.write().option(Constants.SPARK_WRITE_DELIMITER, Constants.TAB_DELIMITER)
-            .mode(writeMode).option(
-            Constants.SPARK_WRITE_HEADER, "true").csv(hdfsPath);
+          .mode(writeMode).option(
+          Constants.SPARK_WRITE_HEADER, "true").csv(hdfsPath);
         sparkSession.sparkContext().setJobGroup("", "", true);
         break;
       case Constants.TRAINING_DATASET_PARQUET_FORMAT:
@@ -1461,84 +1707,95 @@ public class FeaturestoreHelper {
         throw new CannotWriteImageDataFrameException("Image Dataframes can only be read, not written");
       case Constants.TRAINING_DATASET_TFRECORDS_FORMAT:
         sparkDf.write().format(dataFormat).option(Constants.SPARK_TF_CONNECTOR_RECORD_TYPE,
-            Constants.SPARK_TF_CONNECTOR_RECORD_TYPE_EXAMPLE).mode(writeMode).save(hdfsPath);
+          Constants.SPARK_TF_CONNECTOR_RECORD_TYPE_EXAMPLE).mode(writeMode).save(hdfsPath);
         sparkSession.sparkContext().setJobGroup("", "", true);
         break;
       default:
         sparkSession.sparkContext().setJobGroup("", "", true);
         throw new TrainingDatasetFormatNotSupportedError("The provided data format: " + dataFormat +
-            " is not supported in the Java/Scala API, the supported data formats are: " +
-            Constants.TRAINING_DATASET_CSV_FORMAT + "," +
-            Constants.TRAINING_DATASET_TSV_FORMAT + "," +
-            Constants.TRAINING_DATASET_TFRECORDS_FORMAT + "," +
-            Constants.TRAINING_DATASET_PARQUET_FORMAT + "," +
-            Constants.TRAINING_DATASET_AVRO_FORMAT + "," +
-            Constants.TRAINING_DATASET_ORC_FORMAT + "," +
-            Constants.TRAINING_DATASET_IMAGE_FORMAT + ","
+          " is not supported in the Java/Scala API, the supported data formats are: " +
+          Constants.TRAINING_DATASET_CSV_FORMAT + "," +
+          Constants.TRAINING_DATASET_TSV_FORMAT + "," +
+          Constants.TRAINING_DATASET_TFRECORDS_FORMAT + "," +
+          Constants.TRAINING_DATASET_PARQUET_FORMAT + "," +
+          Constants.TRAINING_DATASET_AVRO_FORMAT + "," +
+          Constants.TRAINING_DATASET_ORC_FORMAT + "," +
+          Constants.TRAINING_DATASET_IMAGE_FORMAT + ","
         );
     }
   }
-
+  
   /**
    * Finds a given training dataset from the featurestore metadata by looking for name and version
    *
-   * @param trainingDatasetDTOList a list of training datasets for the featurestore
-   * @param trainingDatasetName    name of the training dataset to search for
-   * @param trainingDatasetVersion version of the training dataset to search for
+   * @param trainingDatasetDTOList
+   *   a list of training datasets for the featurestore
+   * @param trainingDatasetName
+   *   name of the training dataset to search for
+   * @param trainingDatasetVersion
+   *   version of the training dataset to search for
    * @return the trainingdatasetDTO with the correct name and version
-   * @throws TrainingDatasetDoesNotExistError if the name and version combination of the training dataset cannot be
-   * resolved.
+   * @throws TrainingDatasetDoesNotExistError
+   *   if the name and version combination of the training dataset cannot be
+   *   resolved.
    */
   public static TrainingDatasetDTO findTrainingDataset(
-      List<TrainingDatasetDTO> trainingDatasetDTOList, String trainingDatasetName, int trainingDatasetVersion)
-      throws TrainingDatasetDoesNotExistError {
+    List<TrainingDatasetDTO> trainingDatasetDTOList, String trainingDatasetName, int trainingDatasetVersion)
+    throws TrainingDatasetDoesNotExistError {
     List<TrainingDatasetDTO> matches = trainingDatasetDTOList.stream().filter(td ->
-        td.getName().equals(trainingDatasetName) && td.getVersion() == trainingDatasetVersion)
-        .collect(Collectors.toList());
+      td.getName().equals(trainingDatasetName) && td.getVersion() == trainingDatasetVersion)
+      .collect(Collectors.toList());
     if (matches.isEmpty()) {
       List<String> trainingDatasetNames =
-          trainingDatasetDTOList.stream().map(td -> td.getName()).collect(Collectors.toList());
+        trainingDatasetDTOList.stream().map(td -> td.getName()).collect(Collectors.toList());
       throw new TrainingDatasetDoesNotExistError("Could not find the requested training dataset with name: " +
-          trainingDatasetName + " , and version: " + trainingDatasetVersion + " , " +
-          "among the list of available training datasets in the featurestore: " +
-          StringUtils.join(trainingDatasetNames, ","));
+        trainingDatasetName + " , and version: " + trainingDatasetVersion + " , " +
+        "among the list of available training datasets in the featurestore: " +
+        StringUtils.join(trainingDatasetNames, ","));
     }
     return matches.get(0);
   }
-
-
+  
+  
   /**
    * Finds a given training dataset from the featurestore metadata by looking for name and version
    *
-   * @param featuregroupDTOList list of feature groups for the featurestore
-   * @param featuregroupName    name of the feature group to search for
-   * @param featuregroupVersion version of the feature group to search for
+   * @param featuregroupDTOList
+   *   list of feature groups for the featurestore
+   * @param featuregroupName
+   *   name of the feature group to search for
+   * @param featuregroupVersion
+   *   version of the feature group to search for
    * @return the featuregroupDTO with the correct name and version
-   * @throws FeaturegroupDoesNotExistError of the name and version combination of the feature group cannot be resolved.
+   * @throws FeaturegroupDoesNotExistError
+   *   of the name and version combination of the feature group cannot be resolved.
    */
   public static FeaturegroupDTO findFeaturegroup(
-      List<FeaturegroupDTO> featuregroupDTOList, String featuregroupName, int featuregroupVersion)
-      throws FeaturegroupDoesNotExistError {
+    List<FeaturegroupDTO> featuregroupDTOList, String featuregroupName, int featuregroupVersion)
+    throws FeaturegroupDoesNotExistError {
     List<FeaturegroupDTO> matches = featuregroupDTOList.stream().filter(td ->
-        td.getName().equals(featuregroupName) && td.getVersion() == featuregroupVersion)
-        .collect(Collectors.toList());
+      td.getName().equals(featuregroupName) && td.getVersion() == featuregroupVersion)
+      .collect(Collectors.toList());
     if (matches.isEmpty()) {
       List<String> featuregroupNames =
-          featuregroupDTOList.stream().map(td -> td.getName()).collect(Collectors.toList());
+        featuregroupDTOList.stream().map(td -> td.getName()).collect(Collectors.toList());
       throw new FeaturegroupDoesNotExistError("Could not find the requested feature grup with name: " +
-          featuregroupName + " , and version: " + featuregroupVersion + " , " +
-          "among the list of available feature groups in the featurestore: " +
-          StringUtils.join(featuregroupNames, ","));
+        featuregroupName + " , and version: " + featuregroupVersion + " , " +
+        "among the list of available feature groups in the featurestore: " +
+        StringUtils.join(featuregroupNames, ","));
     }
     return matches.get(0);
   }
-
+  
   /**
    * Writes the tf records schema for a training dataset to HDFS
    *
-   * @param hdfsPath the path to write to
-   * @param tfRecordSchemaJson the JSON schema to write
-   * @throws IOException IOException
+   * @param hdfsPath
+   *   the path to write to
+   * @param tfRecordSchemaJson
+   *   the JSON schema to write
+   * @throws IOException
+   *   IOException
    */
   public static void writeTfRecordSchemaJson(String hdfsPath, String tfRecordSchemaJson) throws IOException {
     Configuration hdfsConf = new Configuration();
@@ -1557,13 +1814,15 @@ public class FeaturestoreHelper {
       }
     }
   }
-
+  
   /**
    * Gets the TFRecords schema in JSON format for a spark dataframe
    *
-   * @param sparkDf dataframe to infer tfrecord schema for
+   * @param sparkDf
+   *   dataframe to infer tfrecord schema for
    * @return the TFRecords schema as a JSONObject
-   * @throws InferTFRecordSchemaError InferTFRecordSchemaError
+   * @throws InferTFRecordSchemaError
+   *   InferTFRecordSchemaError
    */
   public static JSONObject getDataframeTfRecordSchemaJson(Dataset<Row> sparkDf) throws InferTFRecordSchemaError {
     JSONObject tfRecordJsonSchema = new JSONObject();
@@ -1612,57 +1871,57 @@ public class FeaturestoreHelper {
       }
       if (sparkDf.schema().fields()[i].dataType() instanceof ArrayType) {
         Row first = sparkDf.first();
-        if(first.schema().fields().length > 1) {
+        if (first.schema().fields().length > 1) {
           throw new InferTFRecordSchemaError("Cannot Infer TF-Record Schema for spark dataframes with more than one " +
             "nested levels");
         }
-        if (first.schema().fields()[i].dataType() instanceof IntegerType){
+        if (first.schema().fields()[i].dataType() instanceof IntegerType) {
           JSONObject featureType = new JSONObject();
           featureType.put(Constants.TF_RECORD_SCHEMA_FEATURE, Constants.TF_RECORD_SCHEMA_FEATURE_VAR);
           featureType.put(Constants.TF_RECORD_SCHEMA_TYPE, Constants.TF_RECORD_INT_TYPE);
           tfRecordJsonSchema.put(sparkDf.schema().fields()[i].name(), featureType);
         }
-        if (first.schema().fields()[i].dataType() instanceof LongType){
+        if (first.schema().fields()[i].dataType() instanceof LongType) {
           JSONObject featureType = new JSONObject();
           featureType.put(Constants.TF_RECORD_SCHEMA_FEATURE, Constants.TF_RECORD_SCHEMA_FEATURE_VAR);
           featureType.put(Constants.TF_RECORD_SCHEMA_TYPE, Constants.TF_RECORD_INT_TYPE);
           tfRecordJsonSchema.put(sparkDf.schema().fields()[i].name(), featureType);
         }
-        if (first.schema().fields()[i].dataType() instanceof FloatType){
+        if (first.schema().fields()[i].dataType() instanceof FloatType) {
           JSONObject featureType = new JSONObject();
           featureType.put(Constants.TF_RECORD_SCHEMA_FEATURE, Constants.TF_RECORD_SCHEMA_FEATURE_VAR);
           featureType.put(Constants.TF_RECORD_SCHEMA_TYPE, Constants.TF_RECORD_FLOAT_TYPE);
           tfRecordJsonSchema.put(sparkDf.schema().fields()[i].name(), featureType);
         }
-        if (first.schema().fields()[i].dataType() instanceof DoubleType){
+        if (first.schema().fields()[i].dataType() instanceof DoubleType) {
           JSONObject featureType = new JSONObject();
           featureType.put(Constants.TF_RECORD_SCHEMA_FEATURE, Constants.TF_RECORD_SCHEMA_FEATURE_VAR);
           featureType.put(Constants.TF_RECORD_SCHEMA_TYPE, Constants.TF_RECORD_FLOAT_TYPE);
           tfRecordJsonSchema.put(sparkDf.schema().fields()[i].name(), featureType);
         }
-        if (first.schema().fields()[i].dataType() instanceof DecimalType){
+        if (first.schema().fields()[i].dataType() instanceof DecimalType) {
           JSONObject featureType = new JSONObject();
           featureType.put(Constants.TF_RECORD_SCHEMA_FEATURE, Constants.TF_RECORD_SCHEMA_FEATURE_VAR);
           featureType.put(Constants.TF_RECORD_SCHEMA_TYPE, Constants.TF_RECORD_FLOAT_TYPE);
           tfRecordJsonSchema.put(sparkDf.schema().fields()[i].name(), featureType);
         }
-        if (first.schema().fields()[i].dataType() instanceof StringType){
+        if (first.schema().fields()[i].dataType() instanceof StringType) {
           JSONObject featureType = new JSONObject();
           featureType.put(Constants.TF_RECORD_SCHEMA_FEATURE, Constants.TF_RECORD_SCHEMA_FEATURE_VAR);
           featureType.put(Constants.TF_RECORD_SCHEMA_TYPE, Constants.TF_RECORD_STRING_TYPE);
           tfRecordJsonSchema.put(sparkDf.schema().fields()[i].name(), featureType);
         }
-        if (first.schema().fields()[i].dataType() instanceof BinaryType){
+        if (first.schema().fields()[i].dataType() instanceof BinaryType) {
           JSONObject featureType = new JSONObject();
           featureType.put(Constants.TF_RECORD_SCHEMA_FEATURE, Constants.TF_RECORD_SCHEMA_FEATURE_VAR);
           featureType.put(Constants.TF_RECORD_SCHEMA_TYPE, Constants.TF_RECORD_STRING_TYPE);
           tfRecordJsonSchema.put(sparkDf.schema().fields()[i].name(), featureType);
         }
-        if (first.schema().fields()[i].dataType() instanceof ArrayType){
+        if (first.schema().fields()[i].dataType() instanceof ArrayType) {
           throw new InferTFRecordSchemaError("Can only infer tf record schema for dataframes with one level of nested" +
             " arrays, this dataframe has two levels.");
         }
-        if(!(first.schema().fields()[i].dataType() instanceof IntegerType) &&
+        if (!(first.schema().fields()[i].dataType() instanceof IntegerType) &&
           !(first.schema().fields()[i].dataType() instanceof LongType) &&
           !(first.schema().fields()[i].dataType() instanceof FloatType) &&
           !(first.schema().fields()[i].dataType() instanceof DoubleType) &&
@@ -1675,7 +1934,7 @@ public class FeaturestoreHelper {
             " IntegerType, LongType, FloatType, DoubleType, DecimalType, StringType, and BinaryType");
         }
       }
-      if(!(sparkDf.schema().fields()[i].dataType() instanceof IntegerType) &&
+      if (!(sparkDf.schema().fields()[i].dataType() instanceof IntegerType) &&
         !(sparkDf.schema().fields()[i].dataType() instanceof LongType) &&
         !(sparkDf.schema().fields()[i].dataType() instanceof FloatType) &&
         !(sparkDf.schema().fields()[i].dataType() instanceof DoubleType) &&
@@ -1683,7 +1942,7 @@ public class FeaturestoreHelper {
         !(sparkDf.schema().fields()[i].dataType() instanceof StringType) &&
         !(sparkDf.schema().fields()[i].dataType() instanceof BinaryType) &&
         !(sparkDf.schema().fields()[i].dataType() instanceof ArrayType)
-      ){
+      ) {
         throw new InferTFRecordSchemaError("Could not infer the tf record schema, a row has the datatype: " +
           sparkDf.schema().fields()[i].dataType().toString() + " which is not in the list of recognized types: " +
           " IntegerType, LongType, FloatType, DoubleType, DecimalType, StringType, BinaryType, and ArrayType");
@@ -1692,39 +1951,43 @@ public class FeaturestoreHelper {
     LOG.log(Level.INFO, "Inferred TFRecordsSchema: " + tfRecordJsonSchema.toString());
     return tfRecordJsonSchema;
   }
-
+  
   /**
    * Gets the latest version of a feature group, returns 0 if no version exists
    *
-   * @param featuregroupDTOS the list of feature groups to search through
-   * @param featuregroupName the name of the feature group to get the latest version of
+   * @param featuregroupDTOS
+   *   the list of feature groups to search through
+   * @param featuregroupName
+   *   the name of the feature group to get the latest version of
    * @return the latest version of the training dataset, 0 if no version exists
    */
   public static int getLatestFeaturegroupVersion(List<FeaturegroupDTO> featuregroupDTOS, String featuregroupName) {
     List<FeaturegroupDTO> matches = featuregroupDTOS.stream().
-        filter(fg -> fg.getName().equals(featuregroupName)).collect(Collectors.toList());
-    if (matches.isEmpty())
+      filter(fg -> fg.getName().equals(featuregroupName)).collect(Collectors.toList());
+    if (matches.isEmpty()) {
       return 0;
-    else {
+    } else {
       return Collections.max(matches.stream().map(fg -> fg.getVersion()).collect(Collectors.toList()));
     }
   }
-
+  
   /**
    * Gets the latest version of a training dataset, returns 0 if no version exists
    *
-   * @param trainingDatsetDTOS  the list of training datasets to search through
-   * @param trainingDatasetName the name of the training dataset to get the latest version of
+   * @param trainingDatsetDTOS
+   *   the list of training datasets to search through
+   * @param trainingDatasetName
+   *   the name of the training dataset to get the latest version of
    * @return the latest version of the training dataset, 0 if no version exists
    */
   public static int getLatestTrainingDatasetVersion(
-      List<TrainingDatasetDTO> trainingDatsetDTOS,
-      String trainingDatasetName) {
+    List<TrainingDatasetDTO> trainingDatsetDTOS,
+    String trainingDatasetName) {
     List<TrainingDatasetDTO> matches = trainingDatsetDTOS.stream().
-        filter(td -> td.getName().equals(trainingDatasetName)).collect(Collectors.toList());
-    if (matches.isEmpty())
+      filter(td -> td.getName().equals(trainingDatasetName)).collect(Collectors.toList());
+    if (matches.isEmpty()) {
       return 0;
-    else {
+    } else {
       return Collections.max(matches.stream().map(fg -> fg.getVersion()).collect(Collectors.toList()));
     }
   }
@@ -1741,7 +2004,8 @@ public class FeaturestoreHelper {
   /**
    * Update cache of the feature store metadata
    *
-   * @param featurestoreMetadataCache the new value of the cache
+   * @param featurestoreMetadataCache
+   *   the new value of the cache
    */
   public static void setFeaturestoreMetadataCache(
     FeaturestoreMetadataDTO featurestoreMetadataCache) {
@@ -1751,33 +2015,41 @@ public class FeaturestoreHelper {
   /**
    * If featurestore is specififed return it, otherwise return default value
    *
-   * @param featurestore featurestore
+   * @param featurestore
+   *   featurestore
    * @return featurestore or default value
    */
-  public static String featurestoreGetOrDefault(String featurestore){
-    if (featurestore == null)
+  public static String featurestoreGetOrDefault(String featurestore) {
+    if (featurestore == null) {
       return FeaturestoreHelper.getProjectFeaturestore();
+    }
     return featurestore;
   }
   
   /**
    * If sparkSession is specififed return it, otherwise return default value
-   * @param sparkSession sparkSession
+   *
+   * @param sparkSession
+   *   sparkSession
    * @return sparkSession or default value
    */
-  public static SparkSession sparkGetOrDefault(SparkSession sparkSession){
-    if (sparkSession == null)
+  public static SparkSession sparkGetOrDefault(SparkSession sparkSession) {
+    if (sparkSession == null) {
       return Hops.findSpark();
+    }
     return sparkSession;
   }
   
   /**
    * If primaryKey is specififed return it, otherwise return default value
-   * @param primaryKey primaryKey
-   * @param df dataframe
+   *
+   * @param primaryKey
+   *   primaryKey
+   * @param df
+   *   dataframe
    * @return primaryKey or default value
    */
-  public static String primaryKeyGetOrDefault(String primaryKey, Dataset<Row> df){
+  public static String primaryKeyGetOrDefault(String primaryKey, Dataset<Row> df) {
     if (primaryKey == null) {
       return FeaturestoreHelper.getDefaultPrimaryKey(df);
     }
@@ -1786,10 +2058,12 @@ public class FeaturestoreHelper {
   
   /**
    * If corrMethod is specififed return it, otherwise return default value
-   * @param corrMethod corrMethod
+   *
+   * @param corrMethod
+   *   corrMethod
    * @return corrMethod or default value
    */
-  public static String correlationMethodGetOrDefault(String corrMethod){
+  public static String correlationMethodGetOrDefault(String corrMethod) {
     if (corrMethod == null) {
       return Constants.CORRELATION_ANALYSIS_DEFAULT_METHOD;
     }
@@ -1798,22 +2072,26 @@ public class FeaturestoreHelper {
   
   /**
    * If numBins is specififed return it, otherwise return default value
-   * @param numBins numBins
+   *
+   * @param numBins
+   *   numBins
    * @return numBins or default value
    */
-  public static Integer numBinsGetOrDefault(Integer numBins){
+  public static Integer numBinsGetOrDefault(Integer numBins) {
     if (numBins == null) {
-      return  20;
+      return 20;
     }
     return numBins;
   }
   
   /**
    * If numClusters is specififed return it, otherwise return default value
-   * @param numClusters numClusters
+   *
+   * @param numClusters
+   *   numClusters
    * @return numClusters or default value
    */
-  public static Integer numClustersGetOrDefault(Integer numClusters){
+  public static Integer numClustersGetOrDefault(Integer numClusters) {
     if (numClusters == null) {
       return 5;
     }
@@ -1822,11 +2100,13 @@ public class FeaturestoreHelper {
   
   /**
    * If jobName is specififed return it, otherwise return default value
-   * @param jobName jobName
+   *
+   * @param jobName
+   *   jobName
    * @return jobName or default value
    */
-  public static String jobNameGetOrDefault(String jobName){
-    if(Strings.isNullOrEmpty(jobName)){
+  public static String jobNameGetOrDefault(String jobName) {
+    if (Strings.isNullOrEmpty(jobName)) {
       return Hops.getJobName();
     }
     return jobName;
@@ -1834,10 +2114,12 @@ public class FeaturestoreHelper {
   
   /**
    * If dataFormat is specififed return it, otherwise return default value
-   * @param dataFormat dataFormat
+   *
+   * @param dataFormat
+   *   dataFormat
    * @return dataFormat or default value
    */
-  public static String dataFormatGetOrDefault(String dataFormat){
+  public static String dataFormatGetOrDefault(String dataFormat) {
     if (dataFormat == null) {
       return Constants.TRAINING_DATASET_TFRECORDS_FORMAT;
     }
@@ -1848,15 +2130,19 @@ public class FeaturestoreHelper {
    * Gets the id of a featurestore (temporary workaround until HOPSWORKS-860 where we use Name as unique identifier for
    * resources)
    *
-   * @param featurestore name of the featurestore to get the id of
+   * @param featurestore
+   *   name of the featurestore to get the id of
    * @return the id of the featurestore (primary key in hopsworks db featurestore table)
-   * @throws JAXBException JAXBException
-   * @throws FeaturestoreNotFound FeaturestoreNotFound
+   * @throws JAXBException
+   *   JAXBException
+   * @throws FeaturestoreNotFound
+   *   FeaturestoreNotFound
    */
   public static Integer getFeaturestoreId(String featurestore) throws JAXBException, FeaturestoreNotFound {
-    if(getFeaturestoreMetadataCache() == null ||
-      !featurestore.equalsIgnoreCase(getFeaturestoreMetadataCache().getFeaturestore().getFeaturestoreName()))
+    if (getFeaturestoreMetadataCache() == null ||
+      !featurestore.equalsIgnoreCase(getFeaturestoreMetadataCache().getFeaturestore().getFeaturestoreName())) {
       new FeaturestoreUpdateMetadataCache().setFeaturestore(featurestore).write();
+    }
     return getFeaturestoreMetadataCache().getFeaturestore().getFeaturestoreId();
   }
   
@@ -1864,63 +2150,77 @@ public class FeaturestoreHelper {
    * Gets the id of a featuregroup (temporary workaround until HOPSWORKs-860) where we use Name as a unique identifier
    * for resources)
    *
-   * @param featurestore the featurestore where the featuregroup belongs
-   * @param featuregroup the featuregroup to get the id of
-   * @param featuregroupVersion the version of the featuregroup
+   * @param featurestore
+   *   the featurestore where the featuregroup belongs
+   * @param featuregroup
+   *   the featuregroup to get the id of
+   * @param featuregroupVersion
+   *   the version of the featuregroup
    * @return the id of the featuregroup
-   * @throws JAXBException JAXBException
-   * @throws FeaturestoreNotFound FeaturestoreNotFound
-   * @throws FeaturegroupDoesNotExistError FeaturegroupDoesNotExistError
+   * @throws JAXBException
+   *   JAXBException
+   * @throws FeaturestoreNotFound
+   *   FeaturestoreNotFound
+   * @throws FeaturegroupDoesNotExistError
+   *   FeaturegroupDoesNotExistError
    */
   public static Integer getFeaturegroupId(String featurestore, String featuregroup, int featuregroupVersion)
     throws JAXBException, FeaturestoreNotFound, FeaturegroupDoesNotExistError {
-    if(getFeaturestoreMetadataCache() == null ||
-      !featurestore.equalsIgnoreCase(getFeaturestoreMetadataCache().getFeaturestore().getFeaturestoreName()))
+    if (getFeaturestoreMetadataCache() == null ||
+      !featurestore.equalsIgnoreCase(getFeaturestoreMetadataCache().getFeaturestore().getFeaturestoreName())) {
       new FeaturestoreUpdateMetadataCache().setFeaturestore(featurestore).write();
+    }
     List<FeaturegroupDTO> featuregroups =
       getFeaturestoreMetadataCache().getFeaturegroups()
         .stream().filter(fg ->
         fg.getName().equalsIgnoreCase(featuregroup) &&
           fg.getVersion() == featuregroupVersion).collect(Collectors.toList());
-    if(featuregroups.size() == 1){
+    if (featuregroups.size() == 1) {
       return featuregroups.get(0).getId();
     }
-    if(featuregroups.size() > 1){
+    if (featuregroups.size() > 1) {
       throw new AssertionError(" Found more than one featuregroup with the name: " + featuregroup + " in the " +
         "featurestore: " + featurestore);
     }
     throw new FeaturegroupDoesNotExistError("Featuregroup: " + featuregroup + " was not found in the featurestore: "
-        + featurestore);
+      + featurestore);
   }
   
   /**
    * Gets the id of a training dataset (temporary workaround until HOPSWORKS-860) where we use Name as a unique
    * identifier for resources)
    *
-   * @param featurestore the featurestore where the training dataset belongs
-   * @param trainingDataset the training dataset to get the id of
-   * @param trainingDatasetVersion the version of the training dataset
+   * @param featurestore
+   *   the featurestore where the training dataset belongs
+   * @param trainingDataset
+   *   the training dataset to get the id of
+   * @param trainingDatasetVersion
+   *   the version of the training dataset
    * @return the id of the training dataset
-   * @throws JAXBException JAXBException
-   * @throws FeaturestoreNotFound FeaturestoreNotFound
-   * @throws TrainingDatasetDoesNotExistError TrainingDatasetDoesNotExistError
+   * @throws JAXBException
+   *   JAXBException
+   * @throws FeaturestoreNotFound
+   *   FeaturestoreNotFound
+   * @throws TrainingDatasetDoesNotExistError
+   *   TrainingDatasetDoesNotExistError
    */
   public static Integer getTrainingDatasetId(String featurestore, String trainingDataset, int trainingDatasetVersion)
     throws JAXBException, FeaturestoreNotFound, TrainingDatasetDoesNotExistError {
-    if(getFeaturestoreMetadataCache() == null ||
-      !featurestore.equalsIgnoreCase(getFeaturestoreMetadataCache().getFeaturestore().getFeaturestoreName()))
+    if (getFeaturestoreMetadataCache() == null ||
+      !featurestore.equalsIgnoreCase(getFeaturestoreMetadataCache().getFeaturestore().getFeaturestoreName())) {
       new FeaturestoreUpdateMetadataCache().setFeaturestore(featurestore).write();
+    }
     List<TrainingDatasetDTO> trainingDatasets =
       getFeaturestoreMetadataCache().getTrainingDatasets()
         .stream().filter(td ->
         td.getName().equalsIgnoreCase(trainingDataset) &&
-        td.getVersion() == trainingDatasetVersion).collect(Collectors.toList());
-    if(trainingDatasets.size() == 1){
+          td.getVersion() == trainingDatasetVersion).collect(Collectors.toList());
+    if (trainingDatasets.size() == 1) {
       return trainingDatasets.get(0).getId();
     }
-    if(trainingDatasets.size() > 1){
-      throw new AssertionError(" Found more than one training dataset with the name: " + trainingDataset + " in the " +
-        "featurestore: " + featurestore);
+    if (trainingDatasets.size() > 1) {
+      throw new AssertionError(" Found more than one training dataset with the name: " +
+        trainingDataset + " in the " + "featurestore: " + featurestore);
     }
     throw new TrainingDatasetDoesNotExistError("Training Dataset: " + trainingDataset + " was not found in the " +
       "featurestore: "
