@@ -247,9 +247,9 @@ public class FeaturestoreHelper {
                                             String hudiTableBasePath) {
    // useFeaturestore(sparkSession, featurestore);
     String tableName = getTableName(featuregroup, featuregroupVersion);
-
+   // String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("//")+1);
     String hudiTablePath = hudiTableBasePath + tableName;
-    HiveConf hiveConf = new HiveConf();
+    HiveConf hiveConf = new HiveConf(true);
     hiveConf.addResource(sparkSession.sparkContext().hadoopConfiguration());
   
     SparkContext sc = sparkSession.sparkContext();
@@ -283,7 +283,7 @@ public class FeaturestoreHelper {
       }
       sparkDf.write().format(format)
               .option(DataSourceWriteOptions.STORAGE_TYPE_OPT_KEY(), HoodieTableType.COPY_ON_WRITE.name())
-              .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), DataSourceWriteOptions.BULK_INSERT_OPERATION_OPT_VAL())
+              .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.OPERATION_OPT_KEY()))
               .option(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY(),
                       hudiArgs.get(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()))
               .option(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY(),
