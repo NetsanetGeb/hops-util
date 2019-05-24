@@ -18,6 +18,7 @@ package io.hops.util.featurestore;
 import com.google.common.base.Strings;
 import com.uber.hoodie.DataSourceUtils;
 import com.uber.hoodie.DataSourceWriteOptions;
+import com.uber.hoodie. DataSourceReadOptions;
 import com.uber.hoodie.common.model.HoodieTableType;
 import com.uber.hoodie.common.util.FSUtils;
 import com.uber.hoodie.common.util.TypedProperties;
@@ -315,6 +316,7 @@ public class FeaturestoreHelper {
     }
   }
 
+
   /**
    * Go through list of featuregroups and find the ones that contain the feature
    *
@@ -375,6 +377,41 @@ public class FeaturestoreHelper {
     String sqlStr = "SELECT * FROM " + getTableName(featuregroup, featuregroupVersion);
     return logAndRunSQL(sparkSession, sqlStr);
   }
+
+    /**
+     * Gets a featuregroup from a particular featurestore
+     *
+     * @param sparkSession        the spark session
+     * @param featuregroup        the featuregroup to get
+     * @param featurestore        the featurestore to query
+     * @param featuregroupVersion the version of the featuregroup to get
+     * @param  hudi                a boolean flag indicator whether the feature group is a hudi table or not
+     * @param  hudiArgs            a java map with hudi arguments
+     * @param  hudiTableBasePath    the base directory to store and retrive hudi table
+     * @return a spark dataframe with the featuregroup
+     */
+
+  public static Dataset<Row> getHudiFeaturegroup(SparkSession sparkSession, String featuregroup,
+                                                 String featurestore, int featuregroupVersion, Map<String, String> hudiArgs,
+                                                 String hudiTableBasePath) {
+      useFeaturestore(sparkSession, featurestore);
+      String format = "com.uber.hoodie";
+
+      if(!hudiArgs.containsKey(DataSourceReadOptions.VIEW_TYPE_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY())
+
+      ) {
+          throw new IllegalArgumentException("HudiArgs map must contain the fields: " +
+                  DataSourceReadOptions.VIEW_TYPE_OPT_KEY() + ", " +
+                  DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY()
+          );
+      }
+      return sparkSession.read().format(format)
+                  .option(DataSourceReadOptions.VIEW_TYPE_OPT_KEY(), hudiArgs.get(DataSourceReadOptions.VIEW_TYPE_OPT_KEY()))
+                  .option(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY(),
+                      hudiArgs.get(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY()))
+                  .load(hudiTableBasePath);
+    }
   
   /**
    * Gets the partitions of a featuregroup from a particular featurestore
