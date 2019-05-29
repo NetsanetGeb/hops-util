@@ -18,7 +18,7 @@ package io.hops.util.featurestore;
 import com.google.common.base.Strings;
 import com.uber.hoodie.DataSourceUtils;
 import com.uber.hoodie.DataSourceWriteOptions;
-import com.uber.hoodie. DataSourceReadOptions;
+import com.uber.hoodie.DataSourceReadOptions;
 import com.uber.hoodie.common.model.HoodieTableType;
 import com.uber.hoodie.common.util.FSUtils;
 import com.uber.hoodie.common.util.TypedProperties;
@@ -247,9 +247,10 @@ public class FeaturestoreHelper {
                                             String featuregroup, String featurestore, int featuregroupVersion, boolean hudi, Map<String, String> hudiArgs,
                                             String hudiTableBasePath) {
    // useFeaturestore(sparkSession, featurestore);
-    String tableName = getTableName(featuregroup, featuregroupVersion);
-   // String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("//")+1);
-    String hudiTablePath = hudiTableBasePath + tableName;
+    //String tableName = getTableName(featuregroup, featuregroupVersion);
+    String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
+   // String hudiTablePath = hudiTableBasePath + tableName;
+    String hudiTablePath = hudiTableBasePath;
     HiveConf hiveConf = new HiveConf(true);
     hiveConf.addResource(sparkSession.sparkContext().hadoopConfiguration());
   
@@ -291,6 +292,8 @@ public class FeaturestoreHelper {
                       hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
               .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
                       hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
+             // .option(DataSourceWriteOptions.CHECKPOINT_KEY(),
+                     // hudiArgs.get(DataSourceWriteOptions.CHECKPOINT_KEY()))
               .option(HoodieWriteConfig.TABLE_NAME, tableName)
               .mode(mode)
               .save(hudiTablePath);
