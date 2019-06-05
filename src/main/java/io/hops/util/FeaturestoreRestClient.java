@@ -111,6 +111,7 @@ public class FeaturestoreRestClient {
    * @param dependencies        a list of dependencies (datasets that this featuregroup depends on)
    * @param featuresSchema      schema of features for the featuregroup
    * @param statisticsDTO       statistics about the featuregroup
+   * @param createTableSql      SQL for creating the Hive External table (in case of Hudi)
    * @throws JWTNotFoundException JWTNotFoundException
    * @throws JAXBException JAXBException
    * @throws FeaturegroupCreationError FeaturegroupCreationError
@@ -119,7 +120,7 @@ public class FeaturestoreRestClient {
   public static void createFeaturegroupRest(
     String featurestore, String featuregroup, int featuregroupVersion, String description,
     String jobName, List<String> dependencies, List<FeatureDTO> featuresSchema,
-    StatisticsDTO statisticsDTO)
+    StatisticsDTO statisticsDTO, String createTableSql)
     throws JWTNotFoundException, JAXBException, FeaturegroupCreationError, FeaturestoreNotFound {
     LOG.log(Level.FINE, "Creating featuregroup " + featuregroup + " in featurestore: " + featurestore);
     JSONObject json = new JSONObject();
@@ -140,7 +141,7 @@ public class FeaturestoreRestClient {
     json.put(Constants.JSON_FEATUREGROUP_CLUSTER_ANALYSIS, FeaturestoreHelper
       .convertClusterAnalysisDTOToJsonObject(statisticsDTO.getClusterAnalysisDTO()));
     json.put(Constants.JSON_FEATUREGROUP_UPDATE_METADATA, false);
-    json.put(Constants.JSON_FEATUREGROUP_UPDATE_STATS, false);
+    json.put(Constants.JSON_FEATUREGROUP_HUDI_CREATE_TABLE, createTableSql);
     Response response;
     try {
       int featurestoreId = FeaturestoreHelper.getFeaturestoreId(featurestore);

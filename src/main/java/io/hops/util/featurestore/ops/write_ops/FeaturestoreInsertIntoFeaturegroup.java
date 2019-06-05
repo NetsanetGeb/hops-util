@@ -73,8 +73,8 @@ public class FeaturestoreInsertIntoFeaturegroup extends FeaturestoreOp {
       new FeaturestoreUpdateMetadataCache().setFeaturestore(featurestore).write();
     }
     spark.sparkContext().setJobGroup("", "", true);
-    FeaturestoreHelper.insertIntoFeaturegroup(dataframe, spark, name,
-            featurestore, version, hudi, hudiArgs, hudiTableBasePath);
+    FeaturestoreHelper.insertIntoFeaturegroup(dataframe, spark, name, featurestore, version, hudi, hudiArgs,
+      hudiTableBasePath, null);
     StatisticsDTO statisticsDTO = FeaturestoreHelper.computeDataFrameStats(name, spark, dataframe,
       featurestore, version,
       descriptiveStats, featureCorr, featureHistograms, clusterAnalysis, statColumns, numBins, numClusters,

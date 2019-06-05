@@ -30,7 +30,7 @@ public class FeaturestoreReadFeaturegroup extends FeaturestoreOp {
 
     if(hudi){
       // returns spark dataframe from a hudi featuregroup
-      return  FeaturestoreHelper.getHudiFeaturegroup(spark, name, featurestore, version, hudiArgs, hudiTableBasePath);
+      return  FeaturestoreHelper.getHudiFeaturegroup(spark, featurestore, hudiArgs, hudiTableBasePath);
     } else {
       // returns spark dataframe from a featuregroup
       return FeaturestoreHelper.getFeaturegroup(spark, name, featurestore, version);
