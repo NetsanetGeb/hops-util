@@ -16,17 +16,11 @@ package io.hops.util.featurestore;
 
 
 import com.google.common.base.Strings;
-import com.uber.hoodie.DataSourceUtils;
-import com.uber.hoodie.DataSourceWriteOptions;
 import com.uber.hoodie.DataSourceReadOptions;
+import com.uber.hoodie.DataSourceWriteOptions;
 import com.uber.hoodie.common.model.HoodieTableType;
-import com.uber.hoodie.common.util.FSUtils;
-import com.uber.hoodie.common.util.TypedProperties;
 import com.uber.hoodie.config.HoodieWriteConfig;
-import com.uber.hoodie.hive.HiveSyncConfig;
 import com.uber.hoodie.hive.HiveSyncTool;
-import org.apache.hadoop.hive.conf.HiveConf;
-import com.uber.hoodie.hive.SlashEncodedDayPartitionValueExtractor;
 import io.hops.util.Constants;
 import io.hops.util.Hops;
 import io.hops.util.exceptions.CannotWriteImageDataFrameException;
@@ -150,6 +144,12 @@ public class FeaturestoreHelper {
    * Featurestore Metadata Cache
    */
   private static FeaturestoreMetadataDTO featurestoreMetadataCache = null;
+  
+  /**
+   * String constants
+   */
+  private static String HOODIE_DATA_FORMAT = "com.uber.hoodie";
+  private static String HOODIE_HIVE_FORMAT = "hive";
 
   static {
     try {
@@ -240,19 +240,15 @@ public class FeaturestoreHelper {
    * @param featuregroupVersion the version of the featuregroup
    * @param hudi                a boolean flag indicating whether the feature group is a hudi table or not
    * @param hudiArgs            a java map with hudi arguments
-   * @param hudiTableBasePath   the base direcotry to where the external hudi table is stored
+   * @param hudiTableBasePath   the base directory to where the external hudi table is stored
+   * @param hiveSyncTool        the hive sync tool for Hudi
    *
    */
   public static void insertIntoFeaturegroup(Dataset<Row> sparkDf, SparkSession sparkSession,
-                                            String featuregroup, String featurestore, int featuregroupVersion, boolean hudi, Map<String, String> hudiArgs,
-                                            String hudiTableBasePath) {
-   // useFeaturestore(sparkSession, featurestore);
+    String featuregroup, String featurestore, int featuregroupVersion, boolean hudi,
+    Map<String, String> hudiArgs,  String hudiTableBasePath, HiveSyncTool hiveSyncTool) {
+    useFeaturestore(sparkSession, featurestore);
     String tableName = getTableName(featuregroup, featuregroupVersion);
-   // String hudiTablePath = hudiTableBasePath + tableName;
-    String hudiTablePath = hudiTableBasePath;
-    HiveConf hiveConf = new HiveConf(true);
-    hiveConf.addResource(sparkSession.sparkContext().hadoopConfiguration());
-  
     SparkContext sc = sparkSession.sparkContext();
     SQLContext sqlContext = new SQLContext(sc);
     sqlContext.setConf("hive.exec.dynamic.partition", "true");
@@ -260,12 +256,10 @@ public class FeaturestoreHelper {
     //overwrite is not supported because it will drop the table and create a new one,
     //this means that all the featuregroup metadata will be dropped due to ON DELETE CASCADE
     String mode = "append";
-    //Specify format hive as it is managed table
-
     if(hudi) {
-      String format = "com.uber.hoodie";
+      String format = HOODIE_DATA_FORMAT;
       String COMMIT_CHECKPOINT_KEY = "_deltastreamer.checkpoint.key";
-      tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
+      //tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
       if(!hudiArgs.containsKey(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()) ||
               !hudiArgs.containsKey(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()) ||
               !hudiArgs.containsKey(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()) ||
@@ -284,37 +278,27 @@ public class FeaturestoreHelper {
                 DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()
         );
       }
+  
+      //Write Hudi External Table
       sparkDf.write().format(format)
-              .option(DataSourceWriteOptions.STORAGE_TYPE_OPT_KEY(), HoodieTableType.COPY_ON_WRITE.name())
-              .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.OPERATION_OPT_KEY()))
-              .option(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY(),
-                      hudiArgs.get(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()))
-              .option(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY(),
-                      hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
-              .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
-                      hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
-             .option(COMMIT_CHECKPOINT_KEY, hudiArgs.get(COMMIT_CHECKPOINT_KEY))
-              .option(HoodieWriteConfig.TABLE_NAME, tableName)
-              .mode(mode)
-              .save(hudiTablePath);
-      TypedProperties props = new TypedProperties();
-      props.put(DataSourceWriteOptions.HIVE_ASSUME_DATE_PARTITION_OPT_KEY(),
-              Boolean.valueOf(DataSourceWriteOptions.DEFAULT_HIVE_ASSUME_DATE_PARTITION_OPT_VAL()));
-      props.put(DataSourceWriteOptions.HIVE_DATABASE_OPT_KEY(), featurestore);
-      props.put(DataSourceWriteOptions.HIVE_TABLE_OPT_KEY(), tableName);
-      props.put(DataSourceWriteOptions.HIVE_USER_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.HIVE_USER_OPT_KEY()));
-      props.put(DataSourceWriteOptions.HIVE_PASS_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.HIVE_PASS_OPT_KEY()));
-      props.put(DataSourceWriteOptions.HIVE_URL_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.HIVE_URL_OPT_KEY()));
-      props.put(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY(),
-              hudiArgs.get(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()));
-      props.put(DataSourceWriteOptions.HIVE_PARTITION_EXTRACTOR_CLASS_OPT_KEY(),
-              SlashEncodedDayPartitionValueExtractor.class.getName());
-      HiveSyncConfig hiveSyncConfig = DataSourceUtils.buildHiveSyncConfig(props, hudiTablePath);
-      FileSystem fs = FSUtils.getFs(hudiTablePath, sparkSession.sparkContext().hadoopConfiguration());
-      new HiveSyncTool(hiveSyncConfig, hiveConf, fs).syncHoodieTable();
+        .option(DataSourceWriteOptions.STORAGE_TYPE_OPT_KEY(), HoodieTableType.COPY_ON_WRITE.name())
+        .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.OPERATION_OPT_KEY()))
+        .option(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY(),
+          hudiArgs.get(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()))
+        .option(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY(),
+          hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
+        .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
+          hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
+        .option(COMMIT_CHECKPOINT_KEY, hudiArgs.get(COMMIT_CHECKPOINT_KEY))
+        .option(HoodieWriteConfig.TABLE_NAME, tableName)
+        .mode(mode)
+        .save(hudiTableBasePath);
+  
+      //Sync Hudi External Table with Hive
+      hiveSyncTool.syncHoodieTable();
     } else {
       //Specify format hive as it is managed table
-      String format = "hive";
+      String format = HOODIE_HIVE_FORMAT;
       sparkDf.write().format(format).mode(mode).insertInto(tableName);
     }
   }
@@ -385,18 +369,14 @@ public class FeaturestoreHelper {
      * Gets a featuregroup from a particular featurestore
      *
      * @param sparkSession        the spark session
-     * @param featuregroup        the featuregroup to get
      * @param featurestore        the featurestore to query
-     * @param featuregroupVersion the version of the featuregroup to get
-     * @param  hudi                a boolean flag indicator whether the feature group is a hudi table or not
-     * @param  hudiArgs            a java map with hudi arguments
-     * @param  hudiTableBasePath    the base directory to store and retrive hudi table
+     * @param hudiArgs            a java map with hudi arguments
+     * @param hudiTableBasePath   the base directory to store and retrive hudi table
      * @return a spark dataframe with the featuregroup
      */
 
-  public static Dataset<Row> getHudiFeaturegroup(SparkSession sparkSession, String featuregroup,
-                                                 String featurestore, int featuregroupVersion, Map<String, String> hudiArgs,
-                                                 String hudiTableBasePath) {
+  public static Dataset<Row> getHudiFeaturegroup(SparkSession sparkSession, String featurestore,
+    Map<String, String> hudiArgs, String hudiTableBasePath) {
       useFeaturestore(sparkSession, featurestore);
       String format = "com.uber.hoodie";
 
@@ -410,7 +390,8 @@ public class FeaturestoreHelper {
           );
       }
       return sparkSession.read().format(format)
-                  .option(DataSourceReadOptions.VIEW_TYPE_OPT_KEY(), hudiArgs.get(DataSourceReadOptions.VIEW_TYPE_OPT_KEY()))
+                  .option(DataSourceReadOptions.VIEW_TYPE_OPT_KEY(),
+                    hudiArgs.get(DataSourceReadOptions.VIEW_TYPE_OPT_KEY()))
                   .option(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY(),
                       hudiArgs.get(DataSourceReadOptions.BEGIN_INSTANTTIME_OPT_KEY()))
                   .load(hudiTableBasePath);
@@ -2028,8 +2009,8 @@ public class FeaturestoreHelper {
       return trainingDatasets.get(0).getId();
     }
     if(trainingDatasets.size() > 1){
-      throw new AssertionError(" Found more than one training dataset with the name: " + trainingDataset + " in the " +
-        "featurestore: " + featurestore);
+      throw new AssertionError(" Found more than one training dataset with the name: " +
+        trainingDataset + " in the " + "featurestore: " + featurestore);
     }
     throw new TrainingDatasetDoesNotExistError("Training Dataset: " + trainingDataset + " was not found in the " +
       "featurestore: "
