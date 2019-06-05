@@ -247,8 +247,7 @@ public class FeaturestoreHelper {
                                             String featuregroup, String featurestore, int featuregroupVersion, boolean hudi, Map<String, String> hudiArgs,
                                             String hudiTableBasePath) {
    // useFeaturestore(sparkSession, featurestore);
-    //String tableName = getTableName(featuregroup, featuregroupVersion);
-    String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
+    String tableName = getTableName(featuregroup, featuregroupVersion);
    // String hudiTablePath = hudiTableBasePath + tableName;
     String hudiTablePath = hudiTableBasePath;
     HiveConf hiveConf = new HiveConf(true);
@@ -265,6 +264,8 @@ public class FeaturestoreHelper {
 
     if(hudi) {
       String format = "com.uber.hoodie";
+      String COMMIT_CHECKPOINT_KEY = "_deltastreamer.checkpoint.key";
+      tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
       if(!hudiArgs.containsKey(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()) ||
               !hudiArgs.containsKey(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()) ||
               !hudiArgs.containsKey(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()) ||
@@ -292,8 +293,7 @@ public class FeaturestoreHelper {
                       hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
               .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
                       hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
-             // .option(DataSourceWriteOptions.CHECKPOINT_KEY(),
-                     // hudiArgs.get(DataSourceWriteOptions.CHECKPOINT_KEY()))
+             .option(COMMIT_CHECKPOINT_KEY, hudiArgs.get(COMMIT_CHECKPOINT_KEY))
               .option(HoodieWriteConfig.TABLE_NAME, tableName)
               .mode(mode)
               .save(hudiTablePath);
