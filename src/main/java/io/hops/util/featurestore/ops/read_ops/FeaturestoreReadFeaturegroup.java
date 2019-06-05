@@ -5,6 +5,7 @@ import io.hops.util.featurestore.ops.FeaturestoreOp;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import java.util.Map;
 
 /**
  * Builder class for Read-Featuregroup operation on the Hopsworks Featurestore
@@ -26,7 +27,15 @@ public class FeaturestoreReadFeaturegroup extends FeaturestoreOp {
    * @return a spark dataframe with the featuregroup
    */
   public Dataset<Row> read() {
-    return FeaturestoreHelper.getFeaturegroup(spark, name, featurestore, version);
+
+    if(hudi){
+      // returns spark dataframe from a hudi featuregroup
+      return  FeaturestoreHelper.getHudiFeaturegroup(spark, featurestore, hudiArgs, hudiTableBasePath);
+    } else {
+      // returns spark dataframe from a featuregroup
+      return FeaturestoreHelper.getFeaturegroup(spark, name, featurestore, version);
+    }
+
   }
   
   /**
@@ -55,5 +64,22 @@ public class FeaturestoreReadFeaturegroup extends FeaturestoreOp {
     this.version = version;
     return this;
   }
+
+  public FeaturestoreReadFeaturegroup setHudi(boolean hudi) {
+    this.hudi = hudi;
+    return this;
+  }
+
+  public FeaturestoreReadFeaturegroup setHudiArgs(Map<String, String> hudiArgs) {
+    this.hudiArgs = hudiArgs;
+    return this;
+  }
+
+  public FeaturestoreReadFeaturegroup setHudiTableBasePath(String hudiTableBasePath) {
+    this.hudiTableBasePath = hudiTableBasePath;
+    return this;
+  }
+
+
   
 }

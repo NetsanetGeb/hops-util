@@ -55,7 +55,10 @@ public abstract class FeaturestoreOp {
   protected List<String> dependencies = new ArrayList<>();
   protected String dataFormat = FeaturestoreHelper.dataFormatGetOrDefault(null);
   protected List<String> partitionBy = new ArrayList<>();
-  
+  protected boolean hudi = false;
+  protected Map<String, String> hudiArgs = null;
+  protected String hudiTableBasePath = null;
+
   /**
    * Class constructor
    *
@@ -249,7 +252,29 @@ public abstract class FeaturestoreOp {
   public List<String> getPartitionBy() {
     return partitionBy;
   }
-  
+
+  /**
+   * @return the hudi boolean flag
+   */
+  public boolean isHudi() {
+    return hudi;
+  }
+
+  /**
+   * @return the hudi arguments
+   */
+  public Map<String, String> getHudiArgs() {
+    return hudiArgs;
+  }
+
+  /**
+   * @return hudi base path of the external table
+   */
+  public String getHudiTableBasePath() {
+    return hudiTableBasePath;
+  }
+
+
   /**
    * Abstract read method, implemented by sub-classes for different feature store read-operations
    * This method is called by the user after populating parameters of the operation
