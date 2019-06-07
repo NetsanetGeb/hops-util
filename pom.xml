@@ -33,7 +33,23 @@
     <dependency>
       <groupId>com.uber.hoodie</groupId>
       <artifactId>hoodie-spark</artifactId>
-      <version>0.4.5</version>
+      <version>0.4.5-SNAPSHOT</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.scala-lang</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.uber.hoodie</groupId>
+      <artifactId>hoodie-hive</artifactId>
+      <version>0.4.5-SNAPSHOT</version>
       <exclusions>
         <exclusion>
           <groupId>org.apache.hadoop</groupId>

@@ -125,13 +125,13 @@ public class FeaturestoreCreateFeaturegroup extends FeaturestoreOp {
   }
   
   private String getHudiTableDDLSql(HiveSyncTool hiveSyncTool) throws IOException {
-    HiveSyncConfig cfg = null;
-    HoodieHiveClient hoodieHiveClient = null;
+    //HiveSyncConfig cfg = null;
+    //HoodieHiveClient hoodieHiveClient = null;
     //Get the HoodieHiveClient
-    //HoodieHiveClient hoodieHiveClient = hiveSyncTool.getHoodieHiveClient();
+    HoodieHiveClient hoodieHiveClient = hiveSyncTool.getHoodieHiveClient();
     // Get the parquet schema for this dataset looking at the latest commit
     MessageType schema = hoodieHiveClient.getDataSchema();
-    //HiveSyncConfig cfg = hiveSyncTool.getSyncCfg()
+    HiveSyncConfig cfg = hiveSyncTool.getSyncCfg();
     String createSQLQuery = SchemaUtil.generateCreateDDL(schema, cfg, HoodieInputFormat.class.getName(),
         MapredParquetOutputFormat.class.getName(), ParquetHiveSerDe.class.getName());
     return createSQLQuery;
