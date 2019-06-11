@@ -89,7 +89,9 @@ public class FeaturestoreCreateFeaturegroup extends FeaturestoreOp {
     String createTableSql = null;
     HiveSyncTool hiveSyncTool = null;
     if(hudi){
-      String tableName = FeaturestoreHelper.getTableName(featuregroup, version);
+      //String tableName = FeaturestoreHelper.getTableName(featuregroup, version);
+      FeaturestoreHelper.hoodieTable(dataframe, hudiArgs, hudiTableBasePath);
+      String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
       hiveSyncTool = buildHiveSyncTool(tableName);
       createTableSql = getHudiTableDDLSql(hiveSyncTool);
     }

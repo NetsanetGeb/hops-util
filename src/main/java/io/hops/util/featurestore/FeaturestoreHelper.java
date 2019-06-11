@@ -247,7 +247,7 @@ public class FeaturestoreHelper {
   public static void insertIntoFeaturegroup(Dataset<Row> sparkDf, SparkSession sparkSession,
     String featuregroup, String featurestore, int featuregroupVersion, boolean hudi,
     Map<String, String> hudiArgs,  String hudiTableBasePath, HiveSyncTool hiveSyncTool) {
-    useFeaturestore(sparkSession, featurestore);
+    //useFeaturestore(sparkSession, featurestore);
     String tableName = getTableName(featuregroup, featuregroupVersion);
     SparkContext sc = sparkSession.sparkContext();
     SQLContext sqlContext = new SQLContext(sc);
@@ -257,43 +257,6 @@ public class FeaturestoreHelper {
     //this means that all the featuregroup metadata will be dropped due to ON DELETE CASCADE
     String mode = "append";
     if(hudi) {
-      String format = HOODIE_DATA_FORMAT;
-      String COMMIT_CHECKPOINT_KEY = "_deltastreamer.checkpoint.key";
-      //tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
-      if(!hudiArgs.containsKey(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()) ||
-              !hudiArgs.containsKey(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()) ||
-              !hudiArgs.containsKey(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()) ||
-              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_USER_OPT_KEY()) ||
-              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PASS_OPT_KEY()) ||
-              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_URL_OPT_KEY()) ||
-              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY())
-      ) {
-        throw new IllegalArgumentException("HudiArgs map must contain the fields: " +
-                DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY() + ", " +
-                DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY() + ", " +
-                DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY() + ", " +
-                DataSourceWriteOptions.HIVE_USER_OPT_KEY() + ", " +
-                DataSourceWriteOptions.HIVE_PASS_OPT_KEY() + ", " +
-                DataSourceWriteOptions.HIVE_URL_OPT_KEY() + ", " +
-                DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()
-        );
-      }
-  
-      //Write Hudi External Table
-      sparkDf.write().format(format)
-        .option(DataSourceWriteOptions.STORAGE_TYPE_OPT_KEY(), HoodieTableType.COPY_ON_WRITE.name())
-        .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.OPERATION_OPT_KEY()))
-        .option(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY(),
-          hudiArgs.get(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()))
-        .option(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY(),
-          hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
-        .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
-          hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
-        .option(COMMIT_CHECKPOINT_KEY, hudiArgs.get(COMMIT_CHECKPOINT_KEY))
-        .option(HoodieWriteConfig.TABLE_NAME, tableName)
-        .mode(mode)
-        .save(hudiTableBasePath);
-  
       //Sync Hudi External Table with Hive
       hiveSyncTool.syncHoodieTable();
     } else {
@@ -303,6 +266,50 @@ public class FeaturestoreHelper {
     }
   }
 
+  public static void hoodieTable(Dataset<Row> sparkDf, Map<String, String> hudiArgs,  String hudiTableBasePath){
+
+      String mode = "append";
+      String format = "com.uber.hoodie";
+      String COMMIT_CHECKPOINT_KEY = "_deltastreamer.checkpoint.key";
+      String INSERT_PARALLELISM = "hoodie.insert.shuffle.parallelism";
+      String BULKINSERT_PARALLELISM = "hoodie.bulkinsert.shuffle.parallelism";
+      String UPSERT_PARALLELISM = "hoodie.upsert.shuffle.parallelism";
+      String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
+      if(!hudiArgs.containsKey(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_USER_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PASS_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_URL_OPT_KEY()) ||
+              !hudiArgs.containsKey(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY())
+      ) {
+          throw new IllegalArgumentException("HudiArgs map must contain the fields: " +
+                  DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY() + ", " +
+                  DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY() + ", " +
+                  DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY() + ", " +
+                  DataSourceWriteOptions.HIVE_USER_OPT_KEY() + ", " +
+                  DataSourceWriteOptions.HIVE_PASS_OPT_KEY() + ", " +
+                  DataSourceWriteOptions.HIVE_URL_OPT_KEY() + ", " +
+                  DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()
+          );
+      }
+      //Write Hudi External Table
+      sparkDf.write().format(format)
+              .option(DataSourceWriteOptions.STORAGE_TYPE_OPT_KEY(), HoodieTableType.COPY_ON_WRITE.name())
+              .option(DataSourceWriteOptions.OPERATION_OPT_KEY(), hudiArgs.get(DataSourceWriteOptions.OPERATION_OPT_KEY()))
+              .option(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY(),
+                      hudiArgs.get(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()))
+              .option(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY(),
+                      hudiArgs.get(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()))
+              .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
+                      hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
+              .option(COMMIT_CHECKPOINT_KEY, hudiArgs.get(COMMIT_CHECKPOINT_KEY))
+              .option(INSERT_PARALLELISM, hudiArgs.get(INSERT_PARALLELISM))
+              .option(UPSERT_PARALLELISM, hudiArgs.get(UPSERT_PARALLELISM))
+              .option(HoodieWriteConfig.TABLE_NAME, tableName)
+              .mode(mode)
+              .save(hudiTableBasePath);
+  }
 
   /**
    * Go through list of featuregroups and find the ones that contain the feature
