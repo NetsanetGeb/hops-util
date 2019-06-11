@@ -35,11 +35,14 @@ import javax.xml.bind.JAXBException;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Logger;
 
 /**
  * Builder class for Create-Featuregroup operation on the Hopsworks Featurestore
  */
 public class FeaturestoreCreateFeaturegroup extends FeaturestoreOp {
+  
+  private static final Logger LOG = Logger.getLogger(FeaturestoreCreateFeaturegroup.class.getName());
   
   /**
    * Constructor
@@ -89,11 +92,17 @@ public class FeaturestoreCreateFeaturegroup extends FeaturestoreOp {
     String createTableSql = null;
     HiveSyncTool hiveSyncTool = null;
     if(hudi){
-      //String tableName = FeaturestoreHelper.getTableName(featuregroup, version);
-      FeaturestoreHelper.hoodieTable(dataframe, hudiArgs, hudiTableBasePath);
-      String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
+      LOG.info("HUDI");
+      String tableName = FeaturestoreHelper.getTableName(name, version);
+      LOG.info("Got Table Name");
+      FeaturestoreHelper.hoodieTable(dataframe, hudiArgs, hudiTableBasePath, tableName);
+      LOG.info("Called HoodieTable");
+      //String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
       hiveSyncTool = buildHiveSyncTool(tableName);
+      LOG.info("Built SyncTool");
       createTableSql = getHudiTableDDLSql(hiveSyncTool);
+      LOG.info("Got SQL: " + createTableSql);
+      LOG.info("TableName: " + tableName);
     }
     FeaturestoreRestClient.createFeaturegroupRest(featurestore, name, version, description, jobName, dependencies,
       featuresSchema, statisticsDTO, createTableSql);
