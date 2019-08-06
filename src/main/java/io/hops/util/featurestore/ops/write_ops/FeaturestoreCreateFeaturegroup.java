@@ -5,10 +5,7 @@ import com.uber.hoodie.DataSourceWriteOptions;
 import com.uber.hoodie.common.util.FSUtils;
 import com.uber.hoodie.common.util.TypedProperties;
 import com.uber.hoodie.hadoop.HoodieInputFormat;
-import com.uber.hoodie.hive.HiveSyncConfig;
-import com.uber.hoodie.hive.HiveSyncTool;
-import com.uber.hoodie.hive.HoodieHiveClient;
-import com.uber.hoodie.hive.SlashEncodedDayPartitionValueExtractor;
+import com.uber.hoodie.hive.*;
 import com.uber.hoodie.hive.util.SchemaUtil;
 import io.hops.util.FeaturestoreRestClient;
 import io.hops.util.Hops;
@@ -125,8 +122,10 @@ public class FeaturestoreCreateFeaturegroup extends FeaturestoreOp {
     props.put(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY(),
       hudiArgs.get(DataSourceWriteOptions.HIVE_PARTITION_FIELDS_OPT_KEY()));
     props.put(DataSourceWriteOptions.HIVE_PARTITION_EXTRACTOR_CLASS_OPT_KEY(),
-      SlashEncodedDayPartitionValueExtractor.class.getName());
-  
+            MultiPartKeysValueExtractor.class.getName());
+    //props.put(DataSourceWriteOptions.HIVE_PARTITION_EXTRACTOR_CLASS_OPT_KEY(),
+            //SlashEncodedDayPartitionValueExtractor.class.getName());
+
     HiveConf hiveConf = new HiveConf(true);
     hiveConf.addResource(getSpark().sparkContext().hadoopConfiguration());
     HiveSyncConfig hiveSyncConfig = DataSourceUtils.buildHiveSyncConfig(props, hudiTableBasePath);

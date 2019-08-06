@@ -286,9 +286,7 @@ public class FeaturestoreHelper {
     String mode = "append";
     String format = "com.uber.hoodie";
     String COMMIT_CHECKPOINT_KEY = "_deltastreamer.checkpoint.key";
-    String INSERT_PARALLELISM = "hoodie.insert.shuffle.parallelism";
-    String BULKINSERT_PARALLELISM = "hoodie.bulkinsert.shuffle.parallelism";
-    String UPSERT_PARALLELISM = "hoodie.upsert.shuffle.parallelism";
+
     //String tableName = hudiTableBasePath.substring(hudiTableBasePath.lastIndexOf("/")+1);
     if (!hudiArgs.containsKey(DataSourceWriteOptions.RECORDKEY_FIELD_OPT_KEY()) ||
       !hudiArgs.containsKey(DataSourceWriteOptions.PARTITIONPATH_FIELD_OPT_KEY()) ||
@@ -319,8 +317,9 @@ public class FeaturestoreHelper {
       .option(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY(),
         hudiArgs.get(DataSourceWriteOptions.PRECOMBINE_FIELD_OPT_KEY()))
       .option(COMMIT_CHECKPOINT_KEY, hudiArgs.get(COMMIT_CHECKPOINT_KEY))
-      .option(INSERT_PARALLELISM, hudiArgs.get(INSERT_PARALLELISM))
-      .option(UPSERT_PARALLELISM, hudiArgs.get(UPSERT_PARALLELISM))
+      .option(HoodieWriteConfig.INSERT_PARALLELISM, hudiArgs.get(HoodieWriteConfig.INSERT_PARALLELISM))
+      .option(HoodieWriteConfig.UPSERT_PARALLELISM, hudiArgs.get(HoodieWriteConfig.UPSERT_PARALLELISM))
+      .option(HoodieWriteConfig.BULKINSERT_PARALLELISM, hudiArgs.get(HoodieWriteConfig.BULKINSERT_PARALLELISM))
       .option(HoodieWriteConfig.TABLE_NAME, tableName)
       .mode(mode)
       .save(hudiTableBasePath);
